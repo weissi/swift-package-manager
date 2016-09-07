@@ -21,19 +21,6 @@ public enum WorkspaceOperationError: Swift.Error {
     case unavailableRepository
 }
 
-/// Convenience initializer for Dictionary.
-//
-// FIXME: Lift to Basic?
-extension Dictionary {
-    init<S: Sequence>(items: S) where S.Iterator.Element == (Key, Value) {
-        var result = Dictionary.init()
-        for (key, value) in items {
-            result[key] = value
-        }
-       self = result
-    }
-}
-
 /// The delegate interface used by the workspace to report status information.
 public protocol WorkspaceDelegate: class {
     /// The workspace is fetching additional repositories in support of
@@ -507,34 +494,30 @@ public class Workspace {
         }
 
         // Load the state.
-        //
-        // FIXME: Build out improved file reading support.
-        try fopen(statePath) { handle in
-            let json = try JSON(bytes: ByteString(encodingAsUTF8: try handle.readFileContents()))
+        let json = try JSON(bytes: try localFileSystem.readFileContents(statePath))
 
-            // Load the state from JSON.
-            guard case let .dictionary(contents) = json,
-                  case let .int(version)? = contents["version"] else {
-                throw PersistenceError.unexpectedData
-            }
-            guard version == Workspace.currentSchemaVersion else {
-                throw PersistenceError.invalidVersion
-            }
-            guard case let .array(dependenciesData)? = contents["dependencies"] else {
-                throw PersistenceError.unexpectedData
-            }
-
-            // Load the repositories.
-            var dependencies = [RepositorySpecifier: ManagedDependency]()
-            for dependencyData in dependenciesData {
-                guard let repo = ManagedDependency(json: dependencyData) else {
-                    throw PersistenceError.unexpectedData
-                }
-                dependencies[repo.repository] = repo
-            }
-
-            self.dependencyMap = dependencies
+        // Load the state from JSON.
+        guard case let .dictionary(contents) = json,
+        case let .int(version)? = contents["version"] else {
+            throw PersistenceError.unexpectedData
         }
+        guard version == Workspace.currentSchemaVersion else {
+            throw PersistenceError.invalidVersion
+        }
+        guard case let .array(dependenciesData)? = contents["dependencies"] else {
+            throw PersistenceError.unexpectedData
+        }
+
+        // Load the repositories.
+        var dependencies = [RepositorySpecifier: ManagedDependency]()
+        for dependencyData in dependenciesData {
+            guard let repo = ManagedDependency(json: dependencyData) else {
+                throw PersistenceError.unexpectedData
+            }
+            dependencies[repo.repository] = repo
+        }
+
+        self.dependencyMap = dependencies
 
         return true
     }
