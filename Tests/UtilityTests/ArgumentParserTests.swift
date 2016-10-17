@@ -9,6 +9,7 @@
 */
 
 import XCTest
+import Basic
 import Utility
 
 enum SampleEnum: String {
@@ -16,26 +17,26 @@ enum SampleEnum: String {
     case Bar
 }
 
-extension SampleEnum: ArgumentKind {
-    public init(parser: ArgumentParserProtocol) throws {
-        let arg = try parser.next()
-        guard let obj = SampleEnum(arg: arg) else {
-            throw ArgumentParserError.unknown(option: arg)
-        }
-        self = obj
-    }
+extension SampleEnum: StringEnumArgument {}
 
-    init?(arg: String) {
-        self.init(rawValue: arg)
+struct Options {
+    struct Flags {
+        let xswiftc: [String]
+        let xlinker: [String]
     }
+    var branch: String?
+    var package: String!
+    var verbose: Bool = false
+    var xld = [String]()
+    var flags = Flags(xswiftc: [], xlinker: [])
 }
 
 class ArgumentParserTests: XCTestCase {
 
     func testBasics() throws {
-        let parser = ArgumentParser()
+        let parser = ArgumentParser(commandName:"SomeBinary", usage: "sample parser", overview: "Sample overview")
 
-        let package = parser.add(positional: "package", kind: String.self, usage: "The name of the package")
+        let package = parser.add(positional: "package name of the year", kind: String.self, usage: "The name of the package")
         let revision = parser.add(option: "--revision", kind: String.self, usage: "The revision")
         let branch = parser.add(option: "--branch", shortName:"-b", kind: String.self, usage: "The branch to checkout")
         let xld = parser.add(option: "-Xld", kind: Array<String>.self, usage: "The xld arguments")
@@ -52,11 +53,19 @@ class ArgumentParserTests: XCTestCase {
         XCTAssertEqual(args.get(verbosity), 2)
         XCTAssertEqual(args.get(noFly), true)
         XCTAssertEqual(args.get(sampleEnum), .Bar)
-        XCTAssert(parser.usageText().contains("package          The name of the package"))
+
+        let stream = BufferedOutputByteStream()
+        parser.printUsage(on: stream)
+        let usage = stream.bytes.asString!
+        print(usage)
+        XCTAssert(usage.contains("OVERVIEW: Sample overview"))
+        XCTAssert(usage.contains("USAGE: SomeBinary sample parser"))
+        XCTAssert(usage.contains("  package name of the year\n                          The name of the package"))
+        XCTAssert(usage.contains(" -Xld                    The xld arguments"))
     }
 
     func testErrors() throws {
-        let parser = ArgumentParser()
+        let parser = ArgumentParser(usage: "sample", overview: "sample")
         _ = parser.add(positional: "package", kind: String.self, usage: "The name of the package")
         _ = parser.add(option: "--verbosity", kind: Int.self, usage: "The revision")
 
@@ -96,8 +105,47 @@ class ArgumentParserTests: XCTestCase {
         }
     }
 
+    func testOptions() throws {
+        let parser = ArgumentParser(usage: "sample parser", overview: "Sample overview")
+        let binder = ArgumentBinder<Options>()
+
+        binder.bind(
+            positional: parser.add(positional: "package", kind: String.self),
+            to: { $0.package = $1 })
+
+        binder.bind(
+            option: parser.add(option: "--branch", shortName:"-b", kind: String.self),
+            to: { $0.branch = $1 })
+
+        binder.bind(
+            option: parser.add(option: "--verbose", kind: Bool.self),
+            to: { $0.verbose = $1 })
+
+        binder.bindArray(
+            option: parser.add(option: "-Xld", kind: Array<String>.self),
+            to: { $0.xld = $1 })
+
+        binder.bindArray(
+            parser.add(option: "-xlinker", kind: [String].self),
+            parser.add(option: "-xswiftc", kind: [String].self),
+            to: { $0.flags = Options.Flags(xswiftc: $2, xlinker: $1) })
+
+        let result = try parser.parse(["MyPkg", "-b", "bugfix", "--verbose", "-Xld", "foo", "-Xld", "bar", "-xlinker", "a", "-xswiftc", "b"])
+
+        var options = Options()
+        binder.fill(result, into: &options)
+
+        XCTAssertEqual(options.branch, "bugfix")
+        XCTAssertEqual(options.package, "MyPkg")
+        XCTAssertEqual(options.verbose, true)
+        XCTAssertEqual(options.xld, ["foo", "bar"])
+        XCTAssertEqual(options.flags.xlinker, ["a"])
+        XCTAssertEqual(options.flags.xswiftc, ["b"])
+    }
+
     static var allTests = [
         ("testBasics", testBasics),
         ("testErrors", testErrors),
+        ("testOptions", testOptions),
     ]
 }
