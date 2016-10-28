@@ -9,16 +9,19 @@
 */
 
 import Basic
+import func POSIX.exit
 
 /// Errors which may be encountered when running argument parser.
 ///
-/// - unknown:            An unknown option is encountered.
+/// - unknownOption:      An unknown option is encountered.
+/// - unknownValue:       The value of an option is unknown.
 /// - expectedValue:      Expected a value from the option.
 /// - unexpectedArgument: An unexpected positional argument encountered.
 /// - expectedArguments:  Expected these positional arguments but not found.
 /// - typeMismatch:       The type of option's value doesn't match.
 public enum ArgumentParserError: Swift.Error {
-    case unknown(option: String)
+    case unknownOption(String)
+    case unknownValue(option: String, value: String)
     case expectedValue(option: String)
     case unexpectedArgument(String)
     case expectedArguments([String])
@@ -33,7 +36,7 @@ public protocol ArgumentKind {
     /// This will be called when the option is encountered while parsing.
     ///
     /// Call methods on the passed parser to manipulate parser as needed.
-    init(parser: ArgumentParserProtocol) throws
+    init(parser: inout ArgumentParserProtocol) throws
 
     /// This will be called for positional arguments with the value discovered.
     init?(arg: String)
@@ -46,8 +49,8 @@ extension String: ArgumentKind {
         self = arg
     }
 
-    public init(parser: ArgumentParserProtocol) throws {
-        self = try parser.next()
+    public init(parser: inout ArgumentParserProtocol) throws {
+        self = try parser.associatedArgumentValue ?? parser.next()
     }
 }
 
@@ -56,8 +59,8 @@ extension Int: ArgumentKind {
         self.init(arg)
     }
 
-    public init(parser: ArgumentParserProtocol) throws {
-        let arg = try parser.next()
+    public init(parser: inout ArgumentParserProtocol) throws {
+        let arg = try parser.associatedArgumentValue ?? parser.next()
         // Not every string can be converted into an integer.
         guard let intValue = Int(arg) else {
             throw ArgumentParserError.typeMismatch("\(arg) is not convertible to Int")
@@ -71,10 +74,18 @@ extension Bool: ArgumentKind {
         self = true
     }
 
-    public init(parser: ArgumentParserProtocol) throws {
-        // We don't need to pop here because presence of the option
-        // is enough to indicate that the bool value is true.
-        self = true
+    public init(parser: inout ArgumentParserProtocol) throws {
+        if let associatedValue = parser.associatedArgumentValue {
+            switch associatedValue {
+            case "true": self = true
+            case "false": self = false
+            default: throw ArgumentParserError.unknownValue(option: parser.currentArgument, value: associatedValue)
+            }
+        } else {
+            // We don't need to pop here because presence of the option
+            // is enough to indicate that the bool value is true.
+            self = true
+        }
     }
 }
 
@@ -93,10 +104,10 @@ extension StringEnumArgument {
         return self.init(arg: arg)
     }
 
-    public init(parser: ArgumentParserProtocol) throws {
-        let arg = try parser.next()
+    public init(parser: inout ArgumentParserProtocol) throws {
+        let arg = try parser.associatedArgumentValue ?? parser.next()
         guard let obj = Self.createObject(arg) else {
-            throw ArgumentParserError.unknown(option: arg)
+            throw ArgumentParserError.unknownValue(option: parser.currentArgument, value: arg)
         }
         self = obj
     }
@@ -181,7 +192,7 @@ public final class PositionalArgument<Kind>: ArgumentProtocol {
 /// A type-erased argument.
 ///
 /// Note: Only used for argument parsing purpose.
-fileprivate final class AnyArgument: ArgumentProtocol {
+fileprivate final class AnyArgument: ArgumentProtocol, CustomStringConvertible {
     typealias ArgumentKindTy = Any
 
     let name: String
@@ -210,22 +221,47 @@ fileprivate final class AnyArgument: ArgumentProtocol {
         self.usage = arg.usage
         isArray = true
     }
+
+    var description: String {
+        return "Argument(\(name))"
+    }
 }
 
 /// Argument parser protocol passed in initializers of ArgumentKind to manipulate
 /// parser as needed by the argument.
 public protocol ArgumentParserProtocol {
-    /// Provides next argument, if available.
-    func next() throws -> String
+    /// The current argument being parsed.
+    var currentArgument: String { get }
+
+    /// The associated value in a `--foo=bar` style argument.
+    var associatedArgumentValue: String? { get }
+
+    /// Provides (and consumes) next argument, if available.
+    mutating func next() throws -> String
 }
 
-/// Argument parser struct reponsible to parse the provided array of arguments and return
+/// Argument parser struct responsible to parse the provided array of arguments and return
 /// the parsed result.
-public final class ArgumentParser: ArgumentParserProtocol {
-    /// A struct representing result of the parsed arguments.
-    public struct Result {
+public final class ArgumentParser {
+    /// A class representing result of the parsed arguments.
+    public class Result: CustomStringConvertible {
         /// Internal representation of arguments mapped to their values.
         private var results = [AnyArgument: Any]()
+
+        /// Result of the parent parent parser, if any.
+        private var parentResult: Result? = nil
+
+        /// Reference to the parser this result belongs to.
+        private let parser: ArgumentParser
+
+        /// The subparser command chosen.
+        fileprivate var subparser: String?
+
+        /// Create a result with a parser and parent result.
+        init(parser: ArgumentParser, parent: Result?) {
+            self.parser = parser
+            self.parentResult = parent
+        }
 
         /// Adds a result.
         ///
@@ -234,7 +270,7 @@ public final class ArgumentParser: ArgumentParserProtocol {
         ///     - value: The associated value of the argument.
         ///
         /// - throws: ArgumentParserError
-        fileprivate mutating func addResult(for argument: AnyArgument, result: ArgumentKind) throws {
+        fileprivate func addResult(for argument: AnyArgument, result: ArgumentKind) throws {
             if argument.isArray {
                 var array = [ArgumentKind]()
                 // Get the previously added results if present.
@@ -250,23 +286,40 @@ public final class ArgumentParser: ArgumentParserProtocol {
 
         /// Get an option argument's value from the results.
         ///
-        /// Since the options are optional, their result may or may not
-        /// be present.
+        /// Since the options are optional, their result may or may not be present.
         public func get<T>(_ arg: OptionArgument<T>) -> T? {
-            return results[AnyArgument(arg)] as? T
+            return (results[AnyArgument(arg)] as? T) ?? parentResult?.get(arg)
         }
 
         /// Array variant for option argument's get(_:).
         public func get<T>(_ arg: OptionArgument<[T]>) -> [T]? {
-            return results[AnyArgument(arg)] as? [T]
+            return (results[AnyArgument(arg)] as? [T]) ?? parentResult?.get(arg)
         }
 
         /// Get a positional argument's value.
-        public func get<T>(_ arg: PositionalArgument<T>) -> T {
-            return results[AnyArgument(arg)] as! T
+        public func get<T>(_ arg: PositionalArgument<T>) -> T? {
+            return results[AnyArgument(arg)] as? T
+        }
+
+        /// Get the subparser which was chosen for the given parser.
+        public func subparser(_ parser: ArgumentParser) -> String? {
+            if parser === self.parser {
+                return subparser
+            }
+            return parentResult?.subparser(parser)
+        }
+
+        public var description: String {
+            var str = "ArgParseResult(\(results))"
+            if let parent = parentResult {
+                str += " -> " + parent.description
+            }
+            return str
         }
     }
 
+    /// The mapping of subparsers to their subcommand.
+    private var subparsers: [String: ArgumentParser] = [:]
 
     /// List of arguments added to this parser.
     private var options = [AnyArgument]()
@@ -294,6 +347,13 @@ public final class ArgumentParser: ArgumentParserProtocol {
         self.overview = overview
     }
 
+    /// Create a subparser with its help text.
+    private init(subparser overview: String) {
+        self.commandName = nil
+        self.usage = ""
+        self.overview = overview
+    }
+
     /// Adds an option to the parser.
     public func add<T: ArgumentKind>(option: String, shortName: String? = nil, kind: T.Type, usage: String? = nil) -> OptionArgument<T> {
         let arg = OptionArgument<T>(name: option, shortName: shortName, usage: usage)
@@ -310,30 +370,53 @@ public final class ArgumentParser: ArgumentParserProtocol {
 
     /// Adds an argument to the parser.
     public func add<T: ArgumentKind>(positional: String, kind: T.Type, usage: String? = nil) -> PositionalArgument<T> {
+        precondition(subparsers.isEmpty, "Positional arguments are not supported with subparsers")
         let arg = PositionalArgument<T>(name: positional, usage: usage)
         positionalArgs.append(AnyArgument(arg))
         return arg
     }
     
+    /// Add a parser with a subcommand name and its corresponding overview.
+    @discardableResult
+    public func add(subparser command: String, overview: String) -> ArgumentParser {
+        let parser = ArgumentParser(subparser: overview)
+        subparsers[command] = parser
+        return parser
+    }
+
     // MARK:- Parsing
 
-    /// The iterator used to iterate arguments.
-    private var argumentsIterator: IndexingIterator<[String]>!
+    /// A wrapper struct to pass to the ArgumentKind initializers.
+    struct Parser: ArgumentParserProtocol {
+        /// The iterator used to iterate arguments.
+        var argumentsIterator: IndexingIterator<[String]>
 
-    /// The current argument being parsed.
-    private var currentArgument: String!
+        /// The current argument being parsed.
+        let currentArgument: String
 
-    /// Provides next argument from iterator or throws.
-    public func next() throws -> String {
-        guard let nextArg = argumentsIterator.next() else {
-            throw ArgumentParserError.expectedValue(option: currentArgument)
+        private(set) var associatedArgumentValue: String?
+
+        mutating func next() throws -> String {
+            guard let nextArg = argumentsIterator.next() else {
+                throw ArgumentParserError.expectedValue(option: currentArgument)
+            }
+            return nextArg
         }
-        return nextArg
+
+        init(associatedArgumentValue: String?, argumentsIterator: IndexingIterator<[String]>, currentArgument: String) {
+            self.associatedArgumentValue = associatedArgumentValue
+            self.argumentsIterator = argumentsIterator
+            self.currentArgument = currentArgument
+        }
     }
 
     /// Parses the provided array and return the result.
     public func parse(_ args: [String] = []) throws -> Result {
-        var result = Result()
+        return try parse(args, parent: nil)
+    }
+
+    private func parse(_ args: [String] = [], parent: Result?) throws -> Result {
+        let result = Result(parser: self, parent: parent)
         // Create options map to quickly look up the arguments.
         let optionsTuple = options.flatMap { option -> [(String, AnyArgument)] in
             var result = [(option.name, option)]
@@ -346,12 +429,26 @@ public final class ArgumentParser: ArgumentParserProtocol {
         let optionsMap = Dictionary(items: optionsTuple)
         // Create iterators.
         var positionalArgsIterator = positionalArgs.makeIterator()
-        argumentsIterator = args.makeIterator()
+        var argumentsIterator = args.makeIterator()
 
         while let arg = argumentsIterator.next() {
-            // Store current argument.
-            currentArgument = arg
-            if isPositional(argument: arg) {
+            // If argument is help then just print usage and exit.
+            if arg == "-h" || arg == "--help" {
+                printUsage(on: stdoutStream, isSubparser: parent != nil)
+                exit(0)
+            } else if isPositional(argument: arg) {
+                /// If this parser has subparsers, we allow only one positional argument which is the subparser command.
+                if !subparsers.isEmpty {
+                    // Make sure this argument has a subparser.
+                    guard let subparser = subparsers[arg] else {
+                        throw ArgumentParserError.expectedArguments(Array(subparsers.keys))
+                    }
+                    // Save which subparser was chosen.
+                    result.subparser = arg
+                    // Parse reset of the arguments with the subparser.
+                    return try subparser.parse(Array(argumentsIterator), parent: result)
+                }
+
                 // Get the next positional argument we are expecting.
                 guard let positionalArg = positionalArgsIterator.next() else {
                     throw ArgumentParserError.unexpectedArgument(arg)
@@ -362,12 +459,23 @@ public final class ArgumentParser: ArgumentParserProtocol {
                 }
                 try result.addResult(for: positionalArg, result: resultValue)
             } else {
+                let (arg, value) = arg.split(around: "=")
                 // Get the corresponding option for the option argument.
                 guard let option = optionsMap[arg] else {
-                    throw ArgumentParserError.unknown(option: arg)
+                    throw ArgumentParserError.unknownOption(arg)
                 }
+
+                // Create a parser protocol object.
+                var parser: ArgumentParserProtocol = Parser(
+                    associatedArgumentValue: value,
+                    argumentsIterator: argumentsIterator,
+                    currentArgument: arg)
+
                 // Initialize the argument and add to result.
-                let resultValue = try option.kind.init(parser: self)
+                let resultValue = try option.kind.init(parser: &parser)
+                // Restore the argument iterator state.
+                // FIXME: Passing inout parser above is a compiler error without explicitly setting its type.
+                argumentsIterator = (parser as! Parser).argumentsIterator
                 try result.addResult(for: option, result: resultValue)
             }
         }
@@ -380,7 +488,7 @@ public final class ArgumentParser: ArgumentParserProtocol {
     }
 
     /// Prints usage text for this parser on the provided stream.
-    public func printUsage(on stream: OutputByteStream) {
+    public func printUsage(on stream: OutputByteStream, isSubparser: Bool = false) {
         /// Space settings.
         let maxWidthDefault = 24
         let padding = 2
@@ -405,46 +513,65 @@ public final class ArgumentParser: ArgumentParserProtocol {
         }
 
         /// Prints an argument on a stream if it has usage.
-        func print(formatted argument: AnyArgument, on stream: OutputByteStream) {
-            // Don't do anything if we don't have usage for this argument.
-            guard let usage = argument.usage else { return }
+        func print(formatted argument: String, usage: String, on stream: OutputByteStream) {
             // Start with a new line and add some padding.
             stream <<< "\n" <<< space(n: padding)
-            let count = argument.name.characters.count
+            let count = argument.characters.count
             // If the argument name is more than the set width take the whole
             // line for it, otherwise we can fit everything in one line.
             if count >= maxWidth - padding {
-                stream <<< argument.name <<< "\n"
+                stream <<< argument <<< "\n"
                 // Align full width because we on a new line.
                 stream <<< space(n: maxWidth + padding)
             } else {
-                stream <<< argument.name
+                stream <<< argument
                 // Align to the remaining empty space we have.
                 stream <<< space(n: maxWidth - count)
             }
             stream <<< usage
         }
 
-        stream <<< "OVERVIEW: " <<< overview <<< "\n\n"
-        // Get the binary name from command line arguments.
-        let defaultCommandName = CommandLine.arguments[0].components(separatedBy: "/").last!
-        stream <<< "USAGE: " <<< (commandName ?? defaultCommandName) <<< " " <<< usage
+        stream <<< "OVERVIEW: " <<< overview
 
-        if positionalArgs.count > 0 {
+        // We only print command usage for top level parsers.
+        if !isSubparser {
             stream <<< "\n\n"
-            stream <<< "COMMANDS:"
-            for argument in positionalArgs {
-                print(formatted: argument, on: stream)
-            }
+            // Get the binary name from command line arguments.
+            let defaultCommandName = CommandLine.arguments[0].components(separatedBy: "/").last!
+            stream <<< "USAGE: " <<< (commandName ?? defaultCommandName) <<< " " <<< usage
         }
 
         if options.count > 0 {
             stream <<< "\n\n"
             stream <<< "OPTIONS:"
-            for argument in options {
-                print(formatted: argument, on: stream)
+            for argument in options.lazy.sorted(by: {$0.name < $1.name}) {
+                guard let usage = argument.usage else { continue }
+                // Create name with its shortname, if available.
+                let name = [argument.name, argument.shortName].flatMap{$0}.joined(separator: ", ")
+                print(formatted: name, usage: usage, on: stream)
             }
         }
+
+        if subparsers.keys.count > 0 {
+            stream <<< "\n\n"
+            stream <<< "SUBCOMMANDS:"
+            for (command, parser) in subparsers.sorted(by: { $0.key < $1.key }) {
+                // Special case for hidden subcommands.
+                guard !parser.overview.isEmpty else { continue }
+                print(formatted: command, usage: parser.overview, on: stream)
+            }
+        }
+
+        if positionalArgs.count > 0 {
+            stream <<< "\n\n"
+            stream <<< "COMMANDS:"
+            for argument in positionalArgs.lazy.sorted(by: {$0.name < $1.name}) {
+                guard let usage = argument.usage else { continue }
+                print(formatted: argument.name, usage: usage, on: stream)
+            }
+        }
+        stream <<< "\n"
+        stream.flush()
     }
 }
 
@@ -488,7 +615,39 @@ public final class ArgumentBinder<Options> {
         to body: @escaping (inout Options, T) -> Void
     ) {
         addBody {
-            body(&$0, $1.get(positional))
+            // All the positional argument will always be present.
+            guard let result = $1.get(positional) else { return }
+            body(&$0, result)
+        }
+    }
+
+    /// Bind two positional arguments.
+    public func bindPositional<T, U>(
+        _ first: PositionalArgument<T>,
+        _ second: PositionalArgument<U>,
+        to body: @escaping (inout Options, T, U) -> Void
+    ) {
+        addBody {
+            // All the positional arguments will always be present.
+            guard let first = $1.get(first) else { return }
+            guard let second = $1.get(second) else { return }
+            body(&$0, first, second)
+        }
+    }
+
+    /// Bind three positional arguments.
+    public func bindPositional<T, U, V>(
+        _ first: PositionalArgument<T>,
+        _ second: PositionalArgument<U>,
+        _ third: PositionalArgument<V>,
+        to body: @escaping (inout Options, T, U, V) -> Void
+    ) {
+        addBody {
+            // All the positional arguments will always be present.
+            guard let first = $1.get(first) else { return }
+            guard let second = $1.get(second) else { return }
+            guard let third = $1.get(third) else { return }
+            body(&$0, first, second, third)
         }
     }
 
@@ -535,6 +694,17 @@ public final class ArgumentBinder<Options> {
      ) {
         addBody {
             body(&$0, $1.get(first) ?? [], $1.get(second) ?? [], $1.get(third) ?? [])
+        }
+    }
+
+    /// Bind a subparser.
+    public func bind(
+        parser: ArgumentParser,
+        to body: @escaping (inout Options, String) -> Void
+    ) {
+        addBody {
+            guard let result = $1.subparser(parser) else { return }
+            body(&$0, result)
         }
     }
 

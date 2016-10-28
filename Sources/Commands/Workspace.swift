@@ -156,8 +156,8 @@ public class Workspace {
             }
             self.repository = RepositorySpecifier(url: repositoryURL)
             self.subpath = RelativePath(subpathString)
-            self.currentVersion = ManagedDependency.optionalStringTransformer(currentVersionData, transformer: Version.init)
-            self.currentRevision = ManagedDependency.optionalStringTransformer(currentRevisionString, transformer: Revision.init(identifier:))
+            self.currentVersion = Version(json: currentVersionData)
+            self.currentRevision = Revision(json: currentRevisionString)
             self.basedOn = ManagedDependency(json: basedOnData) ?? nil
         }
 
@@ -165,29 +165,10 @@ public class Workspace {
             return .dictionary([
                     "repositoryURL": .string(repository.url),
                     "subpath": .string(subpath.asString),
-                    "currentVersion": ManagedDependency.optionalJSONTransformer(currentVersion) { .string(String(describing: $0)) },
-                    "currentRevision": ManagedDependency.optionalJSONTransformer(currentRevision) { .string($0.identifier) },
+                    "currentVersion":  currentVersion.flatMap { JSON.string(String(describing: $0)) } ?? .null,
+                    "currentRevision": currentRevision.flatMap { JSON.string($0.identifier) } ?? .null,
                     "basedOn": basedOn?.toJSON() ?? .null,
                 ])
-        }
-
-        // FIXME: Move these to JSON.
-        private static func optionalStringTransformer<T>(_ value: JSON, transformer: (String) -> T?) -> T? {
-            switch value {
-            case .null:
-                return nil
-            case .string(let string):
-                return transformer(string)
-            default:
-                return nil
-            }
-        }
-
-        private static func optionalJSONTransformer<T>(_ value: T?, transformer: (T) -> JSON) -> JSON {
-            guard let value = value else {
-                return .null
-            }
-            return transformer(value)
         }
     }
 
@@ -355,10 +336,8 @@ public class Workspace {
 
         // Compute new path for the dependency.
         let path = editablesPath.appending(component: packageName)
-
-        let handle = repositoryManager.lookup(repository: dependency.repository)
-        // We should already have the handle if we're editing a dependency.
-        assert(handle.isAvailable)
+        // Get handle to the repository.
+        let handle = try repositoryManager.lookupSynchronously(repository: dependency.repository)
 
         // If a branch is provided, make sure it isn't already present in the repository.
         if let branch = checkoutBranch {
@@ -441,24 +420,7 @@ public class Workspace {
         }
 
         // If not, we need to get the repository from the checkouts.
-        let handle = repositoryManager.lookup(repository: repository)
-
-        // Wait for the repository to be fetched.
-        let wasAvailableCondition = Condition()
-        var wasAvailableOpt: Bool? = nil
-        handle.addObserver { handle in
-            wasAvailableCondition.whileLocked{
-                wasAvailableOpt = handle.isAvailable
-                wasAvailableCondition.signal()
-            }
-        }
-        while wasAvailableCondition.whileLocked({ wasAvailableOpt == nil}) {
-            wasAvailableCondition.wait()
-        }
-        let wasAvailable = wasAvailableOpt!
-        if !wasAvailable {
-            throw WorkspaceOperationError.unavailableRepository
-        }
+        let handle = try repositoryManager.lookupSynchronously(repository: repository)
 
         // Clone the repository into the checkouts.
         let path = checkoutsPath.appending(component: repository.fileSystemIdentifier)

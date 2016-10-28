@@ -19,19 +19,13 @@ import Basic
 
 @_exported import enum PackageDescription.SystemPackageProvider
 
-public protocol ModuleProtocol {
-    var name: String { get }
-    var c99name: String { get }
-    var dependencies: [Module] { get set }
-    var recursiveDependencies: [Module] { get }
-    var isTest: Bool { get }
+public enum ModuleType: String {
+    case executable
+    case library
+    case systemModule = "system-module"
 }
 
-public enum ModuleType {
-    case executable, library, systemModule
-}
-
-public class Module: ModuleProtocol {
+public class Module {
     /// The name of the module.
     ///
     /// NOTE: This name is not the language-level module (i.e., the importable

@@ -29,6 +29,8 @@ struct Options {
     var verbose: Bool = false
     var xld = [String]()
     var flags = Flags(xswiftc: [], xlinker: [])
+    var foo: String?
+    var bar: Int?
 }
 
 class ArgumentParserTests: XCTestCase {
@@ -43,8 +45,9 @@ class ArgumentParserTests: XCTestCase {
         let verbosity = parser.add(option: "--verbose", kind: Int.self, usage: "The verbosity level")
         let noFly = parser.add(option: "--no-fly", kind: Bool.self, usage: "If should fly")
         let sampleEnum = parser.add(positional: "enum", kind: SampleEnum.self)
+        let foo = parser.add(option: "--foo", kind: String.self)
 
-        let args = try parser.parse(["Foo", "-b", "bugfix", "--verbose", "2", "-Xld", "foo", "-Xld", "bar",  "--no-fly", "Bar"])
+        let args = try parser.parse(["Foo", "-b", "bugfix", "--verbose", "2", "-Xld", "foo", "-Xld", "bar",  "--no-fly", "Bar", "--foo=bar"])
 
         XCTAssertEqual(args.get(package), "Foo")
         XCTAssert(args.get(revision) == nil)
@@ -53,11 +56,11 @@ class ArgumentParserTests: XCTestCase {
         XCTAssertEqual(args.get(verbosity), 2)
         XCTAssertEqual(args.get(noFly), true)
         XCTAssertEqual(args.get(sampleEnum), .Bar)
+        XCTAssertEqual(args.get(foo), "bar")
 
         let stream = BufferedOutputByteStream()
         parser.printUsage(on: stream)
         let usage = stream.bytes.asString!
-        print(usage)
         XCTAssert(usage.contains("OVERVIEW: Sample overview"))
         XCTAssert(usage.contains("USAGE: SomeBinary sample parser"))
         XCTAssert(usage.contains("  package name of the year\n                          The name of the package"))
@@ -68,6 +71,7 @@ class ArgumentParserTests: XCTestCase {
         let parser = ArgumentParser(usage: "sample", overview: "sample")
         _ = parser.add(positional: "package", kind: String.self, usage: "The name of the package")
         _ = parser.add(option: "--verbosity", kind: Int.self, usage: "The revision")
+        _ = parser.add(option: "--foo", kind: Bool.self)
 
         do {
             _ = try parser.parse()
@@ -86,7 +90,7 @@ class ArgumentParserTests: XCTestCase {
         do {
             _ = try parser.parse(["foo", "--bar"])
             XCTFail("unexpected success")
-        } catch ArgumentParserError.unknown(let option) {
+        } catch ArgumentParserError.unknownOption(let option) {
             XCTAssertEqual(option, "--bar")
         }
 
@@ -103,6 +107,14 @@ class ArgumentParserTests: XCTestCase {
         } catch ArgumentParserError.typeMismatch(let error) {
             XCTAssertEqual(error, "yes is not convertible to Int")
         }
+
+        do {
+            _ = try parser.parse(["foo", "--foo=hello"])
+            XCTFail("unexpected success")
+        } catch ArgumentParserError.unknownValue(let option, let value) {
+            XCTAssertEqual(option, "--foo")
+            XCTAssertEqual(value, "hello")
+        }
     }
 
     func testOptions() throws {
@@ -112,6 +124,14 @@ class ArgumentParserTests: XCTestCase {
         binder.bind(
             positional: parser.add(positional: "package", kind: String.self),
             to: { $0.package = $1 })
+
+        binder.bindPositional(
+            parser.add(positional: "foo", kind: String.self),
+            parser.add(positional: "bar", kind: Int.self),
+            to: { 
+                $0.foo = $1
+                $0.bar = $2
+            })
 
         binder.bind(
             option: parser.add(option: "--branch", shortName:"-b", kind: String.self),
@@ -130,7 +150,7 @@ class ArgumentParserTests: XCTestCase {
             parser.add(option: "-xswiftc", kind: [String].self),
             to: { $0.flags = Options.Flags(xswiftc: $2, xlinker: $1) })
 
-        let result = try parser.parse(["MyPkg", "-b", "bugfix", "--verbose", "-Xld", "foo", "-Xld", "bar", "-xlinker", "a", "-xswiftc", "b"])
+        let result = try parser.parse(["MyPkg", "foo", "3", "-b", "bugfix", "--verbose", "-Xld", "foo", "-Xld", "bar", "-xlinker", "a", "-xswiftc", "b"])
 
         var options = Options()
         binder.fill(result, into: &options)
@@ -141,11 +161,167 @@ class ArgumentParserTests: XCTestCase {
         XCTAssertEqual(options.xld, ["foo", "bar"])
         XCTAssertEqual(options.flags.xlinker, ["a"])
         XCTAssertEqual(options.flags.xswiftc, ["b"])
+        XCTAssertEqual(options.foo, "foo")
+        XCTAssertEqual(options.bar, 3)
+    }
+
+    func testSubparser() throws {
+        let parser = ArgumentParser(commandName: "SomeBinary", usage: "sample parser", overview: "Sample overview")
+        let foo = parser.add(option: "--foo", kind: String.self, usage: "The foo option")
+
+        let parserA = parser.add(subparser: "a", overview: "A!")
+        let branchOption = parserA.add(option: "--branch", kind: String.self, usage: "The branch to use")
+
+        let parserB = parser.add(subparser: "b", overview: "B!")
+        let noFlyOption = parserB.add(option: "--no-fly", kind: Bool.self, usage: "Should you fly?")
+
+        var args = try parser.parse(["--foo", "foo", "a", "--branch", "bugfix"])
+        XCTAssertEqual(args.get(foo), "foo")
+        XCTAssertEqual(args.get(branchOption), "bugfix")
+        XCTAssertEqual(args.get(noFlyOption), nil)
+        XCTAssertEqual(args.subparser(parser), "a")
+
+        args = try parser.parse(["--foo", "foo", "b", "--no-fly"])
+
+        XCTAssertEqual(args.get(foo), "foo")
+        XCTAssertEqual(args.get(branchOption), nil)
+        XCTAssertEqual(args.get(noFlyOption), true)
+        XCTAssertEqual(args.subparser(parser), "b")
+
+        do {
+            args = try parser.parse(["c"])
+        } catch ArgumentParserError.expectedArguments(let args) {
+            XCTAssertEqual(args.sorted(), ["a", "b"])
+        }
+
+        do {
+            args = try parser.parse(["--foo", "foo", "b", "--no-fly", "--branch", "bugfix"])
+        } catch ArgumentParserError.unknownOption(let arg) {
+            XCTAssertEqual(arg, "--branch")
+        }
+
+        do {
+            args = try parser.parse(["--foo", "foo", "a", "--branch", "bugfix", "--no-fly"])
+        } catch ArgumentParserError.unknownOption(let arg) {
+            XCTAssertEqual(arg, "--no-fly")
+        }
+
+        do {
+            args = try parser.parse(["a", "--branch", "bugfix", "--foo"])
+        } catch ArgumentParserError.unknownOption(let arg) {
+            XCTAssertEqual(arg, "--foo")
+        }
+
+        var stream = BufferedOutputByteStream()
+        parser.printUsage(on: stream)
+        var usage = stream.bytes.asString!
+
+        XCTAssert(usage.contains("OVERVIEW: Sample overview"))
+        XCTAssert(usage.contains("USAGE: SomeBinary sample parser"))
+        XCTAssert(usage.contains("  --foo   The foo option"))
+        XCTAssert(usage.contains("SUBCOMMANDS:"))
+        XCTAssert(usage.contains("  b       B!"))
+
+        stream = BufferedOutputByteStream()
+        parserA.printUsage(on: stream, isSubparser: true)
+        usage = stream.bytes.asString!
+
+        XCTAssert(usage.contains("OVERVIEW: A!"))
+        XCTAssert(usage.contains("OPTIONS:"))
+        XCTAssert(usage.contains("  --branch   The branch to use"))
+
+        stream = BufferedOutputByteStream()
+        parserB.printUsage(on: stream, isSubparser: true)
+        usage = stream.bytes.asString!
+
+        XCTAssert(usage.contains("OVERVIEW: B!"))
+        XCTAssert(usage.contains("OPTIONS:"))
+        XCTAssert(usage.contains("  --no-fly"))
+    }
+
+    func testSubsubparser() throws {
+        let parser = ArgumentParser(usage: "sample parser", overview: "Sample overview")
+
+        let parserA = parser.add(subparser: "foo", overview: "A!")
+        let branchOption = parserA.add(option: "--branch", kind: String.self)
+
+        _ = parserA.add(subparser: "bar", overview: "Bar!")
+        let parserAB = parserA.add(subparser: "baz", overview: "Baz!")
+        let noFlyOption = parserAB.add(option: "--no-fly", kind: Bool.self)
+
+        var args = try parser.parse(["foo", "--branch", "bugfix", "baz", "--no-fly"])
+
+        XCTAssertEqual(args.get(branchOption), "bugfix")
+        XCTAssertEqual(args.get(noFlyOption), true)
+        XCTAssertEqual(args.subparser(parserA), "baz")
+        XCTAssertEqual(args.subparser(parser), "foo")
+
+        args = try parser.parse(["foo", "bar"])
+
+        XCTAssertEqual(args.get(branchOption), nil)
+        XCTAssertEqual(args.get(noFlyOption), nil)
+        XCTAssertEqual(args.subparser(parserA), "bar")
+        XCTAssertEqual(args.subparser(parser), "foo")
+
+        do {
+            args = try parser.parse(["c"])
+        } catch ArgumentParserError.expectedArguments(let args) {
+            XCTAssertEqual(args.sorted(), ["foo"])
+        }
+
+        do {
+            args = try parser.parse(["foo", "--branch", "b", "foo"])
+        } catch ArgumentParserError.expectedArguments(let args) {
+            XCTAssertEqual(args.sorted(), ["bar", "baz"])
+        }
+
+        do {
+            args = try parser.parse(["foo", "bar", "--no-fly"])
+        } catch ArgumentParserError.unknownOption(let arg) {
+            XCTAssertEqual(arg, "--no-fly")
+        }
+    }
+
+    func testSubparserBinder() throws {
+
+        struct Options {
+            enum Mode: String {
+                case update
+                case fetch
+            }
+            var mode: Mode = .update
+            var branch: String?
+        }
+
+        let parser = ArgumentParser(usage: "sample parser", overview: "Sample overview")
+        let binder = ArgumentBinder<Options>()
+
+        binder.bind(
+            option: parser.add(option: "--branch", shortName: "-b", kind: String.self),
+            to: { $0.branch = $1 })
+
+        _ = parser.add(subparser: "init", overview: "A!")
+        _ = parser.add(subparser: "fetch", overview: "B!")
+
+        binder.bind(
+            parser: parser,
+            to: { $0.mode = Options.Mode(rawValue: $1)! })
+
+        let result = try parser.parse(["--branch", "ok", "fetch"])
+
+        var options = Options()
+        binder.fill(result, into: &options)
+
+        XCTAssertEqual(options.branch, "ok")
+        XCTAssertEqual(options.mode, .fetch)
     }
 
     static var allTests = [
         ("testBasics", testBasics),
         ("testErrors", testErrors),
         ("testOptions", testOptions),
+        ("testSubparser", testSubparser),
+        ("testSubsubparser", testSubsubparser),
+        ("testSubparserBinder", testSubparserBinder),
     ]
 }

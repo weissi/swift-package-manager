@@ -61,6 +61,35 @@ final class PackageToolTests: XCTestCase {
         }
     }
 
+    func testDescribe() throws {
+        fixture(name: "ClangModules/SwiftCMixed") { prefix in
+            let output = try execute(["describe", "--type=json"], chdir: prefix)
+            let json = try JSON(bytes: ByteString(encodingAsUTF8: output))
+
+            XCTAssertEqual(json["name"]?.string, "SwiftCMixed")
+            // Path should be an absolute path.
+            XCTAssert(json["path"]?.string?.hasPrefix("/") == true)
+            // Sort the module.
+            let modules = json["modules"]?.array?.sorted {
+                guard let first = $0["name"], let second = $1["name"] else {
+                    return false
+                }
+                return first.stringValue < second.stringValue
+            }
+
+            XCTAssertEqual(modules?[0]["name"]?.stringValue, "CExec")
+            XCTAssertEqual(modules?[2]["type"]?.stringValue, "library")
+            XCTAssertEqual(modules?[1]["sources"]?.array?.map{$0.stringValue} ?? [], ["main.swift"])
+
+            let textOutput = try execute(["describe"], chdir: prefix)
+            
+            XCTAssert(textOutput.hasPrefix("Name: SwiftCMixed"))
+            XCTAssert(textOutput.contains("    C99name: CExec"))
+            XCTAssert(textOutput.contains("    Name: SeaLib"))
+            XCTAssert(textOutput.contains("   Sources: main.swift"))
+        }
+    }
+
     func testDumpPackage() throws {
         fixture(name: "DependencyResolution/External/Complex") { prefix in
             let packageRoot = prefix.appending(component: "app")
@@ -142,8 +171,8 @@ final class PackageToolTests: XCTestCase {
             XCTAssertEqual(try popen(exec), "5\n")
 
             // Put bar and baz in edit mode.
-            _ = try SwiftPMProduct.SwiftPackage.execute(["edit", "--name", "bar", "--branch", "bugfix", "--enable-new-resolver"], chdir: fooPath, printIfError: true)
-            _ = try SwiftPMProduct.SwiftPackage.execute(["edit", "--name", "baz", "--branch", "bugfix", "--enable-new-resolver"], chdir: fooPath, printIfError: true)
+            _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "edit", "bar", "--branch", "bugfix"], chdir: fooPath, printIfError: true)
+            _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "edit", "baz", "--branch", "bugfix"], chdir: fooPath, printIfError: true)
 
             // We should see it now in packages directory.
             let editsPath = fooPath.appending(components: "Packages", "bar")
@@ -167,7 +196,7 @@ final class PackageToolTests: XCTestCase {
 
             // It shouldn't be possible to unedit right now because of uncommited changes.
             do {
-                _ = try SwiftPMProduct.SwiftPackage.execute(["unedit", "--name", "bar", "--enable-new-resolver"], chdir: fooPath)
+                _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "unedit", "bar"], chdir: fooPath)
                 XCTFail("Unexpected unedit success")
             } catch {}
 
@@ -176,7 +205,7 @@ final class PackageToolTests: XCTestCase {
 
             // It shouldn't be possible to unedit right now because of unpushed changes.
             do {
-                _ = try SwiftPMProduct.SwiftPackage.execute(["unedit", "--name", "bar", "--enable-new-resolver"], chdir: fooPath)
+                _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "unedit", "bar"], chdir: fooPath)
                 XCTFail("Unexpected unedit success")
             } catch {}
 
@@ -184,7 +213,7 @@ final class PackageToolTests: XCTestCase {
             try editsRepo.push(remote: "origin", branch: "bugfix")
 
             // We should be able to unedit now.
-            _ = try SwiftPMProduct.SwiftPackage.execute(["unedit", "--name", "bar", "--enable-new-resolver"], chdir: fooPath, printIfError: true)
+            _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "unedit", "bar"], chdir: fooPath, printIfError: true)
         }
     }
 
@@ -223,6 +252,7 @@ final class PackageToolTests: XCTestCase {
     }
 
     static var allTests = [
+        ("testDescribe", testDescribe),
         ("testUsage", testUsage),
         ("testVersion", testVersion),
         ("testFetch", testFetch),

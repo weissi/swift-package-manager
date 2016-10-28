@@ -18,8 +18,9 @@ import Utility
 import class Foundation.Bundle
 #endif
 
-enum SwiftPMProductError: Swift.Error {
+public enum SwiftPMProductError: Swift.Error {
     case packagePathNotFound
+    case executionFailure(error: Swift.Error, output: String)
 }
 
 /// Defines the executables used by SwiftPM.
@@ -30,6 +31,7 @@ public enum SwiftPMProduct {
     case SwiftPackage
     case SwiftTest
     case XCTestHelper
+    case TestSupportExecutable
 
     /// Path to currently built binary.
     var path: AbsolutePath {
@@ -54,6 +56,19 @@ public enum SwiftPMProduct {
             return RelativePath("swift-test")
         case .XCTestHelper:
             return RelativePath("swiftpm-xctest-helper")
+        case .TestSupportExecutable:
+            return RelativePath("TestSupportExecutable")
+        }
+    }
+
+    /// Returns true if the product can accept the --enable-new-resolver flag.
+    var canAcceptNewResolverArg: Bool {
+        switch self {
+        case .SwiftBuild: fallthrough
+        case .SwiftPackage: fallthrough
+        case .SwiftTest: return true
+        case .XCTestHelper: fallthrough
+        case .TestSupportExecutable: return false
         }
     }
 
@@ -70,7 +85,7 @@ public enum SwiftPMProduct {
         var out = ""
         var completeArgs = [path.asString]
         // FIXME: Eliminate this when we switch to the new resolver.
-        if SwiftPMProduct.enableNewResolver && self != .XCTestHelper {
+        if SwiftPMProduct.enableNewResolver && canAcceptNewResolverArg {
             completeArgs += ["--enable-new-resolver"]
         }
         if let chdir = chdir {
@@ -89,7 +104,7 @@ public enum SwiftPMProduct {
                 print("SWIFT_EXEC:", env["SWIFT_EXEC"] ?? "nil")
                 print("output:", out)
             }
-            throw error
+            throw SwiftPMProductError.executionFailure(error: error, output: out)
         }
     }
 

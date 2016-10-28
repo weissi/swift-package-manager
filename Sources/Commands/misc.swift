@@ -8,19 +8,20 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
-public enum Configuration: String {
-    case debug, release
+import Basic
+import Utility
+import SourceControl
 
-    public var dirname: String {
-        switch self {
-            case .debug: return "debug"
-            case .release: return "release"
-        }
+extension Version {
+    init?(json: JSON) {
+        guard case .string(let str) = json else { return nil }
+        self.init(str)
     }
 }
 
-extension Configuration: CustomStringConvertible {
-    public var description: String {
-        return dirname
+extension Revision {
+    init?(json: JSON) {
+        guard case .string(let str) = json else { return nil }
+        self.init(identifier: str)
     }
 }
