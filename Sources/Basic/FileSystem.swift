@@ -130,6 +130,10 @@ public protocol FileSystem {
     //
     // FIXME: This is obviously not a very efficient or flexible API.
     mutating func writeFileContents(_ path: AbsolutePath, bytes: ByteString) throws
+
+    /// Recursively deletes the file system entity at `path`.
+    /// If there is no file system entity at `path`, this function does nothing (in particular, this is not considered to be an error).
+    mutating func removeFileTree(_ path: AbsolutePath)
 }
 
 /// Convenience implementations (default arguments aren't permitted in protocol
@@ -276,6 +280,12 @@ private class LocalFileSystem: FileSystem {
             break
         }
     }
+
+    func removeFileTree(_ path: AbsolutePath) {
+        if self.exists(path) {
+            try? Basic.removeFileTree(path)
+        }
+    }
 }
 
 /// Concrete FileSystem implementation which simulates an empty disk.
@@ -289,16 +299,40 @@ public class InMemoryFileSystem: FileSystem {
         init(_ contents: NodeContents) {
             self.contents = contents
         }
+
+        /// Creates deep copy of the object.
+        func copy() -> Node {
+           return Node(contents.copy()) 
+        }
     }
     private enum NodeContents {
         case file(ByteString)
         case directory(DirectoryContents)
+
+        /// Creates deep copy of the object.
+        func copy() -> NodeContents {
+            switch self {
+            case .file(let bytes):
+                return .file(bytes)
+            case .directory(let contents):
+                return .directory(contents.copy())
+            }
+        }
     }    
     private class DirectoryContents {
         var entries:  [String: Node]
 
         init(entries: [String: Node] = [:]) {
             self.entries = entries
+        }
+
+        /// Creates deep copy of the object.
+        func copy() -> DirectoryContents {
+            let contents = DirectoryContents()
+            for (key, node) in entries {
+                contents.entries[key] = node.copy()
+            }
+            return contents
         }
     }
     
@@ -307,6 +341,13 @@ public class InMemoryFileSystem: FileSystem {
 
     public init() {
         root = Node(.directory(DirectoryContents()))
+    }
+
+    /// Creates deep copy of the object.
+    public func copy() -> InMemoryFileSystem {
+        let fs = InMemoryFileSystem()
+        fs.root = root.copy()
+        return fs
     }
 
     /// Get the node corresponding to the given path.
@@ -475,6 +516,17 @@ public class InMemoryFileSystem: FileSystem {
         // Write the file.
         contents.entries[path.basename] = Node(.file(bytes))
     }
+
+    public func removeFileTree(_ path: AbsolutePath) {
+        // Ignore root and get the parent node's content if its a directory.
+        guard !path.isRoot,
+              let parent = try? getNode(path.parentDirectory),
+              case .directory(let contents)? = parent?.contents else {
+            return
+        }
+        // Set it to nil to release the contents.
+        contents.entries[path.basename] = nil
+    }
 }
 
 /// A rerooted view on an existing FileSystem.
@@ -543,6 +595,10 @@ public struct RerootedFileSystemView: FileSystem {
 
     public mutating func writeFileContents(_ path: AbsolutePath, bytes: ByteString) throws {
         return try underlyingFileSystem.writeFileContents(formUnderlyingPath(path), bytes: bytes)
+    }
+
+    public mutating func removeFileTree(_ path: AbsolutePath) {
+        underlyingFileSystem.removeFileTree(path)
     }
 }
 

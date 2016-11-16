@@ -15,6 +15,7 @@ import Commands
 import PackageDescription
 import PackageLoading
 import PackageModel
+import PackageGraph
 import SourceControl
 import Utility
 
@@ -203,6 +204,25 @@ final class WorkspaceTests: XCTestCase {
             XCTAssertEqual(graph.packages.map{ $0.name }.sorted(), ["A", "Root"])
         }
     }
+
+    func testPackageGraphLoadingBasicsInMem() throws {
+        let path = AbsolutePath("/RootPkg")
+        let fs = InMemoryFileSystem()
+        let manifestGraph = try MockManifestGraph(at: path,
+            rootDeps: [
+                MockDependency("A", version: v1),
+            ],
+            packages: [
+                MockPackage("A", version: v1),
+            ],
+            fs: fs
+        )
+        let workspace = try Workspace(rootPackage: path, manifestLoader: manifestGraph.manifestLoader, delegate: TestWorkspaceDelegate(), fileSystem: fs, repositoryProvider: manifestGraph.repoProvider!)
+        let graph = try workspace.loadPackageGraph()
+        XCTAssertEqual(graph.packages.count, 2)
+        XCTAssertEqual(graph.packages.map{ $0.name }.sorted(), ["A", "Root"])
+    }
+
 
     /// Check the ability to load a graph which requires cloning new packages.
     func testPackageGraphLoadingWithCloning() {
@@ -553,13 +573,393 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
+    func testPinning() throws {
+        let path = AbsolutePath("/RootPkg")
+        let fs = InMemoryFileSystem()
+        let manifestGraph = try MockManifestGraph(at: path,
+            rootDeps: [
+                MockDependency("A", version: Version(1, 0, 0)..<Version(1, .max, .max)),
+            ],
+            packages: [
+                MockPackage("A", version: v1),
+                MockPackage("A", version: "1.0.1"),
+            ],
+            fs: fs
+        )
+
+        let provider = manifestGraph.repoProvider!
+        let aRepo = provider.specifierMap[manifestGraph.repo("A")]!
+        try aRepo.tag(name: "1.0.1")
+
+        func newWorkspace() -> Workspace {
+            return try! Workspace(
+                rootPackage: path,
+                manifestLoader: manifestGraph.manifestLoader,
+                delegate: TestWorkspaceDelegate(),
+                fileSystem: fs,
+                repositoryProvider: provider)
+        }
+
+        // Pins "A" at v1.
+        func pin() throws {
+            let workspace = newWorkspace()
+            let manifests = try workspace.loadDependencyManifests()
+            guard let (_, dep) = manifests.lookup(package: "A") else {
+                return XCTFail("Expected manifest for package A not found")
+            }
+            try workspace.pin(dependency: dep, packageName: "A", at: v1)
+        }
+
+        // Package graph should load 1.0.1.
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == "1.0.1")
+        }
+
+        // Pin package to v1.
+        try pin()
+
+        // Package graph should load v1.
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == "1.0.0")
+        }
+
+        // Unpin package.
+        do {
+            let workspace = newWorkspace()
+            try workspace.pinsStore.unpin(package: "A")
+            try workspace.reset()
+        }
+
+        // Package graph should load 1.0.1.
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == "1.0.1")
+        }
+
+        // Pin package to v1.
+        try pin()
+
+        // Package *update* should load v1 after pinning.
+        do {
+            let workspace = newWorkspace()
+            try workspace.updateDependencies()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == "1.0.0")
+        }
+    }
+
+    func testPinAll() throws {
+        let path = AbsolutePath("/RootPkg")
+        let fs = InMemoryFileSystem()
+        let manifestGraph = try MockManifestGraph(at: path,
+            rootDeps: [
+                MockDependency("A", version: Version(1, 0, 0)..<Version(1, .max, .max)),
+                MockDependency("B", version: Version(1, 0, 0)..<Version(1, .max, .max)),
+            ],
+            packages: [
+                MockPackage("A", version: v1),
+                MockPackage("B", version: v1),
+                MockPackage("A", version: "1.0.1"),
+                MockPackage("B", version: "1.0.1"),
+            ],
+            fs: fs
+        )
+        let provider = manifestGraph.repoProvider!
+
+        func newWorkspace() -> Workspace {
+            return try! Workspace(
+                rootPackage: path,
+                manifestLoader: manifestGraph.manifestLoader,
+                delegate: TestWorkspaceDelegate(),
+                fileSystem: fs,
+                repositoryProvider: provider)
+        }
+
+        // Package graph should load v1.
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == v1)
+            XCTAssert(graph.lookup("B").version == v1)
+        }
+
+        // Pin the dependencies.
+        do {
+            let workspace = newWorkspace()
+            try workspace.pinAll()
+            // Reset so we have a clean workspace.
+            try workspace.reset()
+        }
+
+        // Add a new version of dependencies.
+        try provider.specifierMap[manifestGraph.repo("A")]!.tag(name: "1.0.1")
+        try provider.specifierMap[manifestGraph.repo("B")]!.tag(name: "1.0.1")
+
+        // Loading the workspace now should load v1 of both dependencies.
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == v1)
+            XCTAssert(graph.lookup("B").version == v1)
+        }
+
+        // Updating the dependencies shouldn't update to 1.0.1.
+        do {
+            let workspace = newWorkspace()
+            try workspace.updateDependencies()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == v1)
+            XCTAssert(graph.lookup("B").version == v1)
+        }
+
+        // Unpin all of the dependencies.
+        do {
+            let workspace = newWorkspace()
+            try workspace.pinsStore.unpinAll()
+            // Reset so we have a clean workspace.
+            try workspace.reset()
+        }
+
+        // Loading the workspace now should load 1.0.1 of both dependencies.
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == "1.0.1")
+            XCTAssert(graph.lookup("B").version == "1.0.1")
+        }
+    }
+
+    func testUpdateRepinning() throws {
+        let path = AbsolutePath("/RootPkg")
+        let fs = InMemoryFileSystem()
+        let manifestGraph = try MockManifestGraph(at: path,
+            rootDeps: [
+                MockDependency("A", version: Version(1, 0, 0)..<Version(1, .max, .max)),
+                MockDependency("B", version: Version(1, 0, 0)..<Version(1, .max, .max)),
+            ],
+            packages: [
+                MockPackage("A", version: v1),
+                MockPackage("B", version: v1),
+                MockPackage("A", version: "1.0.1"),
+                MockPackage("B", version: "1.0.1"),
+            ],
+            fs: fs
+        )
+        let provider = manifestGraph.repoProvider!
+
+        func newWorkspace() -> Workspace {
+            return try! Workspace(
+                rootPackage: path,
+                manifestLoader: manifestGraph.manifestLoader,
+                delegate: TestWorkspaceDelegate(),
+                fileSystem: fs,
+                repositoryProvider: provider)
+        }
+
+        // Load and pin the dependencies.
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == v1)
+            XCTAssert(graph.lookup("B").version == v1)
+            try workspace.pinAll()
+            try workspace.reset()
+        }
+
+        // Add a new version of dependencies.
+        try provider.specifierMap[manifestGraph.repo("A")]!.tag(name: "1.0.1")
+        try provider.specifierMap[manifestGraph.repo("B")]!.tag(name: "1.0.1")
+
+        // Updating the dependencies with repin should update to 1.0.1.
+        do {
+            let workspace = newWorkspace()
+            try workspace.updateDependencies(repin: true)
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == "1.0.1")
+            XCTAssert(graph.lookup("B").version == "1.0.1")
+        }
+    }
+
+    func testPinFailure() throws {
+        let path = AbsolutePath("/RootPkg")
+        let fs = InMemoryFileSystem()
+        let manifestGraph = try MockManifestGraph(at: path,
+            rootDeps: [
+                MockDependency("A", version: Version(1, 0, 0)..<Version(1, .max, .max)),
+                MockDependency("B", version: v1),
+            ],
+            packages: [
+                MockPackage("A", version: v1),
+                MockPackage("A", version: "1.0.1", dependencies: [
+                    MockDependency("B", version: "2.0.0")
+                ]),
+                MockPackage("B", version: v1),
+                MockPackage("B", version: "2.0.0"),
+            ],
+            fs: fs
+        )
+        let provider = manifestGraph.repoProvider!
+        try provider.specifierMap[manifestGraph.repo("B")]!.tag(name: "2.0.0")
+
+        func newWorkspace() -> Workspace {
+            return try! Workspace(
+                rootPackage: path,
+                manifestLoader: manifestGraph.manifestLoader,
+                delegate: TestWorkspaceDelegate(),
+                fileSystem: fs,
+                repositoryProvider: provider)
+        }
+
+        func pin(at version: Version) throws {
+            let workspace = newWorkspace()
+            let manifests = try workspace.loadDependencyManifests()
+            guard let (_, dep) = manifests.lookup(package: "A") else {
+                return XCTFail("Expected manifest for package A not found")
+            }
+            try workspace.pin(dependency: dep, packageName: "A", at: version)
+        }
+
+        // Pinning at v1 should work.
+        do {
+            let workspace = newWorkspace()
+            _ = try workspace.loadPackageGraph()
+            try pin(at: v1)
+            try workspace.reset()
+        }
+
+        // Add a the tag which will make resolution unstatisfiable.
+        try provider.specifierMap[manifestGraph.repo("A")]!.tag(name: "1.0.1")
+
+        do {
+            let workspace = newWorkspace()
+            let graph = try workspace.loadPackageGraph()
+            XCTAssert(graph.lookup("A").version == v1)
+            // Pinning non existant version should fail.
+            XCTAssertThrows(DependencyResolverError.unsatisfiable) {
+                try pin(at: "1.0.2")
+            }
+            // Pinning an unstatisfiable version should fail.
+            XCTAssertThrows(DependencyResolverError.unsatisfiable) {
+                try pin(at: "1.0.1")
+            }
+            // But we should still be able to repin at v1.
+            try pin(at: v1)
+            // And also after unpinning.
+            try workspace.pinsStore.unpinAll()
+            try pin(at: v1)
+
+        }
+    }
+
+    func testPinAllFailure() throws {
+        let path = AbsolutePath("/RootPkg")
+        let fs = InMemoryFileSystem()
+        let manifestGraph = try MockManifestGraph(at: path,
+            rootDeps: [
+                MockDependency("A", version: v1),
+                MockDependency("B", version: v1),
+            ],
+            packages: [
+                MockPackage("A", version: v1, dependencies: [
+                    MockDependency("B", version: "2.0.0")
+                ]),
+                MockPackage("B", version: v1),
+                MockPackage("B", version: "2.0.0"),
+            ],
+            fs: fs
+        )
+        let provider = manifestGraph.repoProvider!
+        try provider.specifierMap[manifestGraph.repo("B")]!.tag(name: "2.0.0")
+        func newWorkspace() -> Workspace {
+            return try! Workspace(
+                rootPackage: path,
+                manifestLoader: manifestGraph.manifestLoader,
+                delegate: TestWorkspaceDelegate(),
+                fileSystem: fs,
+                repositoryProvider: provider)
+        }
+
+        // We should not be able to load package graph.
+        XCTAssertThrows(DependencyResolverError.unsatisfiable) {
+            _ = try newWorkspace().loadPackageGraph()
+        }
+
+        // We should not be able to pin all.
+        XCTAssertThrows(DependencyResolverError.unsatisfiable) {
+            _ = try newWorkspace().pinAll()
+        }
+    }
+
+    func testStrayPin() throws {
+        let path = AbsolutePath("/RootPkg")
+        let fs = InMemoryFileSystem()
+        let manifestGraph = try MockManifestGraph(at: path,
+            rootDeps: [
+                MockDependency("A", version: Version(1, 0, 0)..<Version(1, .max, .max)),
+            ],
+            packages: [
+                MockPackage("A", version: v1, dependencies: [
+                    MockDependency("B", version: v1)
+                ]),
+                MockPackage("A", version: "1.0.1"),
+                MockPackage("B", version: v1),
+            ],
+            fs: fs
+        )
+        let provider = manifestGraph.repoProvider!
+
+        func newWorkspace() -> Workspace {
+            return try! Workspace(
+                rootPackage: path,
+                manifestLoader: manifestGraph.manifestLoader,
+                delegate: TestWorkspaceDelegate(),
+                fileSystem: fs,
+                repositoryProvider: provider)
+        }
+        
+        do {
+            let workspace = newWorkspace()
+            _ = try workspace.loadPackageGraph()
+            let manifests = try workspace.loadDependencyManifests()
+            guard let (_, dep) = manifests.lookup(package: "B") else {
+                return XCTFail("Expected manifest for package B not found")
+            }
+            try workspace.pin(dependency: dep, packageName: "B", at: v1)
+            try workspace.reset()
+        }
+
+        try provider.specifierMap[manifestGraph.repo("A")]!.tag(name: "1.0.1")
+
+        do {
+            let workspace = newWorkspace()
+            let g = try workspace.loadPackageGraph()
+            XCTAssert(g.lookup("A").version == "1.0.1")
+            // FIXME: This is wrong, we only have this dependency cloned because it is referenced by the stray pin.
+            // We shouldn't clone stray pins.
+            XCTAssertNotNil(workspace.dependencyMap[manifestGraph.repo("B")])
+        }
+
+    }
+
     static var allTests = [
         ("testBasics", testBasics),
         ("testEditDependency", testEditDependency),
         ("testEditDependencyOnNewBranch", testEditDependencyOnNewBranch),
         ("testDependencyManifestLoading", testDependencyManifestLoading),
         ("testPackageGraphLoadingBasics", testPackageGraphLoadingBasics),
+        ("testPackageGraphLoadingBasicsInMem", testPackageGraphLoadingBasicsInMem),
         ("testPackageGraphLoadingWithCloning", testPackageGraphLoadingWithCloning),
+        ("testPinAll", testPinAll),
+        ("testPinning", testPinning),
+        ("testUpdateRepinning", testUpdateRepinning),
+        ("testPinFailure", testPinFailure),
+        ("testPinAllFailure", testPinAllFailure),
+        ("testStrayPin", testStrayPin),
         ("testUpdate", testUpdate),
         ("testUneditDependency", testUneditDependency),
         ("testCleanAndReset", testCleanAndReset),
@@ -619,6 +1019,9 @@ struct MockManifestGraph {
     /// The map of external manifests created.
     let manifests: [MockManifestLoader.Key: Manifest]
 
+    /// Present if file system used is in inmemory.
+    let repoProvider: InMemoryGitRepositoryProvider?
+
     /// Convinience accessor for repository specifiers.
     func repo(_ package: String) -> RepositorySpecifier {
         return repos[package]!
@@ -629,17 +1032,49 @@ struct MockManifestGraph {
         return manifests[MockManifestLoader.Key(url: repo(package).url, version: version)]!
     }
 
-    init(at path: AbsolutePath, rootDeps: [MockDependency], packages: [MockPackage]) throws {
+    /// Create instance with mocking on in memory file system.
+    init(
+        at path: AbsolutePath,
+        rootDeps: [MockDependency],
+        packages: [MockPackage],
+        fs: InMemoryFileSystem
+    ) throws {
+        try self.init(at: path, rootDeps: rootDeps, packages: packages, inMemory: (fs, InMemoryGitRepositoryProvider()))
+    }
+
+    init(
+        at path: AbsolutePath,
+        rootDeps: [MockDependency],
+        packages: [MockPackage],
+        inMemory: (fs: InMemoryFileSystem, provider: InMemoryGitRepositoryProvider)? = nil
+    ) throws {
+        repoProvider = inMemory?.provider
         // Create the test repositories, we don't need them to have actual
         // contents (the manifests are mocked).
         let repos = Dictionary(items: try packages.map { package -> (String, RepositorySpecifier) in
             let repoPath = path.appending(component: package.name)
-            // Don't recreate repo if it is already there.
-            if !exists(repoPath) {
-                try makeDirectories(repoPath)
-                initGitRepo(repoPath, tag: package.version?.description ?? "initial")
+            let tag = package.version?.description ?? "initial"
+            let specifier = RepositorySpecifier(url: repoPath.asString)
+
+            // If this is in memory mocked graph.
+            if let inMemory = inMemory {
+                if !inMemory.fs.exists(repoPath) {
+                    let repo = InMemoryGitRepository(path: repoPath, fs: inMemory.fs)
+                    try repo.createDirectory(repoPath, recursive: true)
+                    let filePath = repoPath.appending(component: "source.swift")
+                    try repo.writeFileContents(filePath, bytes: "foo")
+                    repo.commit()
+                    try repo.tag(name: tag)
+                    inMemory.provider.add(specifier: specifier, repository: repo)
+                }
+            } else {
+                // Don't recreate repo if it is already there.
+                if !exists(repoPath) {
+                    try makeDirectories(repoPath)
+                    initGitRepo(repoPath, tag: package.version?.description ?? "initial")
+                }
             }
-            return (package.name, RepositorySpecifier(url: repoPath.asString))
+            return (package.name, specifier)
         })
 
         // Create the root manifest.
@@ -679,5 +1114,12 @@ struct MockManifestGraph {
         return dependencies.map { dependency in
             return .Package(url: repos[dependency.name]?.url ?? "//\(dependency.name)", versions: dependency.version)
         }
+    }
+}
+
+extension PackageGraph {
+    /// Finds the package matching the given name.
+    func lookup(_ name: String) -> PackageModel.Package {
+        return packages.first{ $0.name == name }!
     }
 }

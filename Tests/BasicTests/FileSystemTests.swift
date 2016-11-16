@@ -131,6 +131,12 @@ class FileSystemTests: XCTestCase {
         XCTAssert(!fs.exists(missingDir))
     }
 
+    func testRemoveFileTree() throws {
+        mktmpdir { path in
+            try removeFileTreeTester(fs: &localFileSystem, basePath: path)
+        }
+    }
+
     // MARK: InMemoryFileSystem Tests
 
     func testInMemoryBasics() throws {
@@ -262,6 +268,27 @@ class FileSystemTests: XCTestCase {
         XCTAssert(!fs.exists(missingDir))
     }
 
+    func testInMemoryFsCopy() throws {
+        let fs = InMemoryFileSystem()
+        try! fs.createDirectory(AbsolutePath("/new-dir/subdir"), recursive: true)
+        let filePath = AbsolutePath("/new-dir/subdir").appending(component: "new-file.txt")
+        try! fs.writeFileContents(filePath, bytes: "Hello, world!")
+        XCTAssertEqual(try! fs.readFileContents(filePath), "Hello, world!")
+
+        let copyFs = fs.copy()
+        XCTAssertEqual(try! copyFs.readFileContents(filePath), "Hello, world!")
+        try! copyFs.writeFileContents(filePath, bytes: "Hello, world 2!")
+
+        XCTAssertEqual(try! fs.readFileContents(filePath), "Hello, world!")
+        XCTAssertEqual(try! copyFs.readFileContents(filePath), "Hello, world 2!")
+    }
+
+    func testInMemRemoveFileTree() throws {
+        var fs = InMemoryFileSystem() as FileSystem
+        try removeFileTreeTester(fs: &fs, basePath: .root)
+    }
+
+
     // MARK: RootedFileSystem Tests
 
     func testRootedFileSystem() throws {
@@ -291,7 +318,32 @@ class FileSystemTests: XCTestCase {
         ("testLocalReadWriteFile", testLocalReadWriteFile),
         ("testInMemoryBasics", testInMemoryBasics),
         ("testInMemoryCreateDirectory", testInMemoryCreateDirectory),
+        ("testInMemoryFsCopy", testInMemoryFsCopy),
         ("testInMemoryReadWriteFile", testInMemoryReadWriteFile),
         ("testRootedFileSystem", testRootedFileSystem),
+        ("testRemoveFileTree", testRemoveFileTree),
+        ("testInMemRemoveFileTree", testInMemRemoveFileTree),
     ]
+}
+
+/// Helper method to test file tree removal method on the given file system.
+///
+/// - Parameters:
+///   - fs: The filesystem to test on.
+///   - basePath: The path at which the temporary file strucutre should be created.
+private func removeFileTreeTester(fs: inout FileSystem, basePath path: AbsolutePath, file: StaticString = #file, line: UInt = #line) throws {
+    // Test removing folders.
+    let folders = path.appending(components: "foo", "bar", "baz")
+    try fs.createDirectory(folders, recursive: true)
+    XCTAssert(fs.exists(folders), file: file, line: line)
+    fs.removeFileTree(folders)
+    XCTAssertFalse(fs.exists(folders), file: file, line: line)
+
+    // Test removing file.
+    let filePath = folders.appending(component: "foo.txt")
+    try fs.createDirectory(folders, recursive: true)
+    try fs.writeFileContents(filePath, bytes: "foo")
+    XCTAssert(fs.exists(filePath), file: file, line: line)
+    fs.removeFileTree(filePath)
+    XCTAssertFalse(fs.exists(filePath), file: file, line: line)
 }
