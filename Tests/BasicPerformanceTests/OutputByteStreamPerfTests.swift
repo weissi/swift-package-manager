@@ -12,11 +12,7 @@ import XCTest
 
 import Basic
 
-// FIXME: Performance tests are disabled for the time being because they have
-// too high an impact on overall testing time.
-//
-// See: https://bugs.swift.org/browse/SR-1354
-#if false
+#if ENABLE_PERF_TESTS
 
 struct ByteSequence: Sequence {
     let bytes16 = [UInt8](repeating: 0, count: 1 << 4)
@@ -191,6 +187,32 @@ class OutputByteStreamPerfTests: XCTestCase {
                     stream <<< Format.asJSON(listOfThings, transform: { $0.value })
                 }
                 XCTAssertGreaterThan(stream.bytes.count, 1000)
+            }
+        }
+    }
+
+    func testJSONToString_X100() {
+        let foo = JSON.dictionary([
+            "foo": .string("bar"),
+            "bar": .int(2),
+            "baz": .array([1, 2, 3].map(JSON.int)),
+            ])
+
+        let bar = JSON.dictionary([
+            "poo": .array([foo, foo, foo]),
+            "foo": .int(1),
+            ])
+
+        let baz = JSON.dictionary([
+            "poo": .array([foo, bar, foo]),
+            "foo": .int(1),
+            ])
+
+        let json = JSON.array((0..<100).map { _ in baz })
+        measure {
+            for _ in 0..<100 {
+                let result = json.toString()
+                XCTAssertGreaterThan(result.utf8.count, 10)
             }
         }
     }

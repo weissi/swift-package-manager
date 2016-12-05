@@ -20,66 +20,8 @@ import TestSupport
 // FIXME: We have no @testable way to import generic structures.
 @testable import PackageGraph
 
-extension String: PackageContainerIdentifier { }
-
 private typealias MockPackageConstraint = PackageContainerConstraint<String>
 
-private enum MockLoadingError: Error {
-    case unknownModule
-}
-
-private struct MockPackageContainer: PackageContainer {
-    typealias Identifier = String
-
-    let name: Identifier
-
-    let dependenciesByVersion: [Version: [(container: Identifier, versionRequirement: VersionSetSpecifier)]]
-
-    var identifier: Identifier {
-        return name
-    }
-
-    var versions: [Version] {
-        return dependenciesByVersion.keys.sorted()
-    }
-
-    func getDependencies(at version: Version) -> [MockPackageConstraint] {
-        return dependenciesByVersion[version]!.map{ (name, versions) in
-            return MockPackageConstraint(container: name, versionRequirement: versions)
-        }
-    }
-}
-
-private struct MockPackagesProvider: PackageContainerProvider {
-    typealias Container = MockPackageContainer
-
-    let containers: [Container]
-    let containersByIdentifier: [Container.Identifier: Container]
-
-    init(containers: [MockPackageContainer]) {
-        self.containers = containers
-        self.containersByIdentifier = Dictionary(items: containers.map{ ($0.identifier, $0) })
-    }
-
-    func getContainer(for identifier: Container.Identifier) throws -> Container {
-        if let container = containersByIdentifier[identifier] {
-            return container
-        }
-        throw MockLoadingError.unknownModule
-    }
-}
-
-private class MockResolverDelegate: DependencyResolverDelegate {
-    typealias Identifier = MockPackageContainer.Identifier
-
-    var messages = [String]()
-
-    func added(container identifier: Identifier) {
-        messages.append("added container: \(identifier)")
-    }
-}
-
-private typealias MockDependencyResolver = DependencyResolver<MockPackagesProvider, MockResolverDelegate>
 private typealias MockVersionAssignmentSet = VersionAssignmentSet<MockPackageContainer>
 
 // Some handy ranges.
@@ -255,24 +197,28 @@ class DependencyResolverTests: XCTestCase {
 
             // Check the unconstrained solution.
             XCTAssertEqual(
-                try resolver.resolveSubtree(a, subjectTo: ConstraintSet(), excluding: [:]),
+                resolver.resolveSubtree(a, subjectTo: ConstraintSet(), excluding: [:]),
                 [
                     ["A": v2, "B": v1],
                     ["A": v1, "B": v1],
                 ])
+            XCTAssertNil(resolver.error)
 
             // Check when constraints prevents a specific version.
             XCTAssertEqual(
-                try resolver.resolveSubtree(a, subjectTo: ["A": v1Range]),
+                resolver.resolveSubtree(a, subjectTo: ["A": v1Range]),
                 [["A": v1, "B": v1]])
+            XCTAssertNil(resolver.error)
 
             // Check when constraints prevent resolution.
             XCTAssertEqual(
-                try resolver.resolveSubtree(a, subjectTo: ["A": v0_0_0Range]),
+                resolver.resolveSubtree(a, subjectTo: ["A": v0_0_0Range]),
                 [])
+            XCTAssertNil(resolver.error)
             XCTAssertEqual(
-                try resolver.resolveSubtree(a, subjectTo: ["B": v0_0_0Range]),
+                resolver.resolveSubtree(a, subjectTo: ["B": v0_0_0Range]),
                 [])
+            XCTAssertNil(resolver.error)
         }
 
         // Check respect for the constraints induced by the initial package.
@@ -285,15 +231,16 @@ class DependencyResolverTests: XCTestCase {
             let resolver = MockDependencyResolver(provider, delegate)
 
             // Check that this throws, because we try to fetch "B".
-            XCTAssertThrows(MockLoadingError.unknownModule) {
-                _ = try resolver.resolveSubtree(a)
-            }
+            let _ = resolver.resolveSubtree(a).map{$0}
+            XCTAssertEqual(resolver.error as? MockLoadingError, MockLoadingError.unknownModule)
+            resolver.error = nil
 
             // Check that this works, because we skip ever trying the version
             // referencing "C" because the it is unsatisfiable.
             XCTAssertEqual(
-                try resolver.resolveSubtree(a, subjectTo: ["B": v0_0_0Range]),
+                resolver.resolveSubtree(a, subjectTo: ["B": v0_0_0Range]),
                 [["A": v1]])
+            XCTAssertNil(resolver.error)
         }
 
         // Check when a subtree is unsolvable.
@@ -308,8 +255,9 @@ class DependencyResolverTests: XCTestCase {
             let resolver = MockDependencyResolver(provider, delegate)
 
             XCTAssertEqual(
-                try resolver.resolveSubtree(a, subjectTo: ["C": v0_0_0Range]),
+                resolver.resolveSubtree(a, subjectTo: ["C": v0_0_0Range]),
                 [["A": v1]])
+            XCTAssertNil(resolver.error)
         }
 
         // Check when a subtree can't be merged.
@@ -334,11 +282,12 @@ class DependencyResolverTests: XCTestCase {
             let resolver = MockDependencyResolver(provider, delegate)
 
             XCTAssertEqual(
-                try resolver.resolveSubtree(a),
+                resolver.resolveSubtree(a),
                 [
                     ["A": v2, "B": v1, "C": v1, "D": v1],
                     ["A": v1]
                 ])
+            XCTAssertNil(resolver.error)
         }
     }
 
@@ -395,6 +344,38 @@ class DependencyResolverTests: XCTestCase {
         }
     }
 
+    func testLazyResolve() throws {
+        // Make sure that we don't ask for dependencies of versions we don't need to resolve.
+        let a = MockPackageContainer(name: "A", dependenciesByVersion: [v1: [], v1_1: []])
+        let provider = MockPackagesProvider(containers: [a])
+        let resolver = MockDependencyResolver(provider, MockResolverDelegate())
+        let result = try resolver.resolve(constraints: [
+            MockPackageConstraint(container: "A", versionRequirement: v1Range),
+        ])
+        XCTAssertEqual(result[0].version, v1_1)
+        XCTAssertEqual(a.requestedVersions, [v1_1])
+    }
+
+    func testExactConstraint() throws {
+        let provider = MockPackagesProvider(containers: [
+            MockPackageContainer(name: "A", dependenciesByVersion: [v1: [], v1_1: []])
+        ])
+        let resolver = MockDependencyResolver(provider, MockResolverDelegate())
+
+        let result = try resolver.resolve(constraints: [
+            MockPackageConstraint(container: "A", versionRequirement: .exact(v1)),
+            MockPackageConstraint(container: "A", versionRequirement: v1Range)
+        ])
+        XCTAssertEqual(result[0].version, v1)
+
+        XCTAssertThrows(DependencyResolverError.unsatisfiable) {
+            _ = try resolver.resolve(constraints: [
+                MockPackageConstraint(container: "A", versionRequirement: .exact(v1)),
+                MockPackageConstraint(container: "A", versionRequirement: v1_1Range)
+            ])
+        }
+    }
+
     static var allTests = [
         ("testBasics", testBasics),
         ("testVersionSetSpecifier", testVersionSetSpecifier),
@@ -403,6 +384,8 @@ class DependencyResolverTests: XCTestCase {
         ("testResolveSubtree", testResolveSubtree),
         ("testResolve", testResolve),
         ("testCompleteness", testCompleteness),
+        ("testLazyResolve", testLazyResolve),
+        ("testExactConstraint", testExactConstraint),
     ]
 }
 
@@ -560,8 +543,8 @@ private extension DependencyResolver {
         _ container: Container,
         subjectTo allConstraints: [Identifier: VersionSetSpecifier] = [:],
         excluding exclusions: [Identifier: Set<Version>] = [:]
-    ) throws -> AnySequence<AssignmentSet> {
-        return try resolveSubtree(container, subjectTo: ConstraintSet(allConstraints), excluding: exclusions)
+    ) -> AnySequence<AssignmentSet> {
+        return resolveSubtree(container, subjectTo: ConstraintSet(allConstraints), excluding: exclusions)
     }
 }
 
@@ -624,16 +607,4 @@ where C.Identifier == String
     for (a,b) in zip(assignments, expected) {
         XCTAssertEqual(a, b, file: file, line: line)
     }
-}
-
-func XCTAssertEqual<I: PackageContainerIdentifier>(
-    _ assignment: [(container: I, version: Version)],
-    _ expected: [I: Version],
-    file: StaticString = #file, line: UInt = #line)
-{
-    var actual = [I: Version]()
-    for (identifier, binding) in assignment {
-        actual[identifier] = binding
-    }
-    XCTAssertEqual(actual, expected, file: file, line: line)
 }

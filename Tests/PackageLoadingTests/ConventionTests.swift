@@ -857,6 +857,48 @@ class ConventionTests: XCTestCase {
         }
     }
 
+    func testInvalidLayout6() throws {
+        let fs = InMemoryFileSystem(emptyFiles:
+            "/Sources/file.swift",
+            "/Sources/foo/foo.swift",
+            "/Sources/bar/bar.swift")
+
+        PackageBuilderTester("MyPackage", in: fs) { result in
+            result.checkDiagnostic("the package has an unsupported layout, unexpected source file(s) found: /Sources/file.swift fix: move the file(s) inside a module")
+        }
+    }
+
+    func testModuleMapLayout() throws {
+       var fs = InMemoryFileSystem(emptyFiles:
+            "/Sources/clib/include/module.modulemap",
+            "/Sources/clib/include/clib.h",
+            "/Sources/clib/clib.c")
+
+        PackageBuilderTester("MyPackage", in: fs) { result in
+            result.checkModule("clib") { moduleResult in
+                moduleResult.check(c99name: "clib", type: .library, isTest: false)
+                moduleResult.checkSources(root: "/Sources/clib", paths: "clib.c")
+            }
+        }
+
+        fs = InMemoryFileSystem(emptyFiles:
+            "/Sources/module.modulemap",
+            "/Sources/foo.swift")
+
+        PackageBuilderTester("MyPackage", in: fs) { result in
+            result.checkDiagnostic("the package has an unsupported layout, modulemap (/Sources/module.modulemap) is not allowed to be mixed with sources fix: move the modulemap inside include directory")
+        }
+
+        fs = InMemoryFileSystem(emptyFiles:
+            "/Sources/Foo/module.modulemap",
+            "/Sources/Foo/foo.swift",
+            "/Sources/Bar/bar.swift")
+
+        PackageBuilderTester("MyPackage", in: fs) { result in
+            result.checkDiagnostic("the package has an unsupported layout, modulemap (/Sources/Foo/module.modulemap) is not allowed to be mixed with sources fix: move the modulemap inside include directory")
+        }
+    }
+
     func testNoSourcesInModule() throws {
         var fs = InMemoryFileSystem()
         try fs.createDirectory(AbsolutePath("/Sources/Module"), recursive: true)
@@ -933,6 +975,7 @@ class ConventionTests: XCTestCase {
         ("testInvalidLayout3", testInvalidLayout3),
         ("testInvalidLayout4", testInvalidLayout4),
         ("testInvalidLayout5", testInvalidLayout5),
+        ("testInvalidLayout6", testInvalidLayout5),
         ("testNoSourcesInModule", testNoSourcesInModule),
         ("testValidSources", testValidSources),
         ("testExcludes", testExcludes),
@@ -941,6 +984,7 @@ class ConventionTests: XCTestCase {
         ("testInvalidTestTargets", testInvalidTestTargets),
         ("testLooseSourceFileInTestsDir", testLooseSourceFileInTestsDir),
         ("testManifestTargetDeclErrors", testManifestTargetDeclErrors),
+        ("testModuleMapLayout", testModuleMapLayout),
         ("testProducts", testProducts),
         ("testBadProducts", testBadProducts),
         ("testVersionSpecificManifests", testVersionSpecificManifests),

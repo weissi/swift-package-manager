@@ -165,6 +165,7 @@ public class GitRepository: Repository, WorkingCheckout {
         struct Entry {
             enum EntryType {
                 case blob
+                case commit
                 case executableBlob
                 case symlink
                 case tree
@@ -181,6 +182,8 @@ public class GitRepository: Repository, WorkingCheckout {
                         self = .executableBlob
                     case 0o120000:
                         self = .symlink
+                    case 0o160000:
+                        self = .commit
                     default:
                         return nil
                     }
@@ -217,7 +220,7 @@ public class GitRepository: Repository, WorkingCheckout {
         self.path = path
         self.isWorkingRepo = isWorkingRepo
         do {
-            let isBareRepo = try Git.runPopen([Git.tool, "-C", path.asString, "rev-parse", "--is-bare-repository"]).chomp() == "true"
+            let isBareRepo = try popen([Git.tool, "-C", path.asString, "rev-parse", "--is-bare-repository"]).chomp() == "true"
             assert(isBareRepo != isWorkingRepo)
         } catch {
             // Ignore if we couldn't run popen for some reason.
@@ -248,11 +251,11 @@ public class GitRepository: Repository, WorkingCheckout {
     public func remotes() throws -> [(name: String, url: String)] {
         return try queue.sync {
             // Get the remote names.
-            let remoteNamesOutput = try Git.runPopen([Git.tool, "-C", path.asString, "remote"]).chomp()
+            let remoteNamesOutput = try popen([Git.tool, "-C", path.asString, "remote"]).chomp()
             let remoteNames = remoteNamesOutput.characters.split(separator: "\n").map(String.init)
             return try remoteNames.map { name in
                 // For each remote get the url.
-                let url = try Git.runPopen([Git.tool, "-C", path.asString, "config", "--get", "remote.\(name).url"]).chomp()
+                let url = try popen([Git.tool, "-C", path.asString, "config", "--get", "remote.\(name).url"]).chomp()
                 return (name, url)
             }
         }
@@ -278,7 +281,7 @@ public class GitRepository: Repository, WorkingCheckout {
     /// Returns the tags present in repository.
     private func getTags() -> [String] {
         // FIXME: Error handling.
-        let tagList = try! Git.runPopen([Git.tool, "-C", path.asString, "tag", "-l"])
+        let tagList = try! popen([Git.tool, "-C", path.asString, "tag", "-l"])
         return tagList.characters.split(separator: "\n").map(String.init)
     }
 
@@ -301,8 +304,8 @@ public class GitRepository: Repository, WorkingCheckout {
             // just a safety measure for now.
             let diffArgs = ["--no-ext-diff", "--quiet", "--exit-code"]
             do {
-                _ = try Git.runPopen([Git.tool, "-C", path.asString, "diff"] + diffArgs)
-                _ = try Git.runPopen([Git.tool, "-C", path.asString, "diff", "--cached"] + diffArgs)
+                try system(args: [Git.tool, "-C", path.asString, "diff"] + diffArgs, quietly: true)
+                try system(args: [Git.tool, "-C", path.asString, "diff", "--cached"] + diffArgs, quietly: true)
             } catch {
                 return true
             }
@@ -329,7 +332,7 @@ public class GitRepository: Repository, WorkingCheckout {
         // FIXME: Audit behavior with off-branch tags in remote repositories, we
         // may need to take a little more care here.
         try queue.sync {
-            try Git.runCommandQuietly([Git.tool, "-C", path.asString, "reset", "--hard", tag])
+            try system(args: [Git.tool, "-C", path.asString, "reset", "--hard", tag])
             try self.updateSubmoduleAndClean()
         }
     }
@@ -338,15 +341,15 @@ public class GitRepository: Repository, WorkingCheckout {
         // FIXME: Audit behavior with off-branch tags in remote repositories, we
         // may need to take a little more care here.
         try queue.sync {
-            try Git.runCommandQuietly([Git.tool, "-C", path.asString, "checkout", "-f", revision.identifier])
+            try system(args: [Git.tool, "-C", path.asString, "checkout", "-f", revision.identifier])
             try self.updateSubmoduleAndClean()
         }
     }
 
     /// Initializes and updates the submodules, if any, and cleans left over the files and directories using git-clean.
     private func updateSubmoduleAndClean() throws {
-        try Git.runCommandQuietly([Git.tool, "-C", path.asString, "submodule", "update", "--init", "--recursive"])
-        try Git.runCommandQuietly([Git.tool, "-C", path.asString, "clean", "-ffd"])
+        try system(args: [Git.tool, "-C", path.asString, "submodule", "update", "--init", "--recursive"])
+        try system(args: [Git.tool, "-C", path.asString, "clean", "-ffd"])
     }
 
     /// Returns true if a revision exists.
@@ -407,14 +410,16 @@ public class GitRepository: Repository, WorkingCheckout {
             //
             //   `mode type hash\tname`
             //
-            // where `mode` is the 6-byte octal file mode, `type` is a 4-byte
-            // type ("blob" or "tree"), `hash` is the hash, and the remainder of
+            // where `mode` is the 6-byte octal file mode, `type` is a 4-byte or 6-byte
+            // type ("blob", "tree", "commit"), `hash` is the hash, and the remainder of
             // the line is the file name.
             let bytes = ByteString(encodingAsUTF8: line)
             guard bytes.count > 6 + 1 + 4 + 1 + 40 + 1,
                   bytes.contents[6] == UInt8(ascii: " "),
-                  bytes.contents[6 + 1 + 4] == UInt8(ascii: " "),
-                  bytes.contents[6 + 1 + 4 + 1 + 40] == UInt8(ascii: "\t") else {
+                  // Search for the second space since `type` is of variable length.
+                  let secondSpace = bytes.contents[6 + 1 ..< bytes.contents.endIndex].index(of: UInt8(ascii: " ")),
+                  bytes.contents[secondSpace] == UInt8(ascii: " "),
+                  bytes.contents[secondSpace + 1 + 40] == UInt8(ascii: "\t") else {
                 throw GitInterfaceError.malformedResponse("unexpected tree entry '\(line)' in '\(treeInfo)'")
             }
 
@@ -423,8 +428,8 @@ public class GitRepository: Repository, WorkingCheckout {
                 (acc << 3) | (Int(char) - Int(UInt8(ascii: "0")))
             }
             guard let type = Tree.Entry.EntryType(mode: mode),
-                  let hash = Hash(asciiBytes: bytes.contents[(6 + 1 + 4 + 1)..<(6 + 1 + 4 + 1 + 40)]),
-                  let name = ByteString(bytes.contents[(6 + 1 + 4 + 1 + 40 + 1)..<bytes.count]).asString else {
+                  let hash = Hash(asciiBytes: bytes.contents[(secondSpace + 1)..<(secondSpace + 1 + 40)]),
+                  let name = ByteString(bytes.contents[(secondSpace + 1 + 40 + 1)..<bytes.count]).asString else {
                 throw GitInterfaceError.malformedResponse("unexpected tree entry '\(line)' in '\(treeInfo)'")
             }
 
@@ -451,7 +456,7 @@ public class GitRepository: Repository, WorkingCheckout {
     /// Runs the command in the serial queue and runs the completion closure if present.
     private func runCommandQuietly(_ command: [String], completion: (() -> Void)? = nil) throws {
         try queue.sync {
-            try Git.runCommandQuietly(command)
+            try system(args: command, quietly: true)
             completion?()
         }
     }
@@ -459,7 +464,7 @@ public class GitRepository: Repository, WorkingCheckout {
     /// Executes popen in the serial queue.
     private func runPopen(_ command: [String]) throws -> String {
         return try queue.sync {
-            return try Git.runPopen(command)
+            return try popen(command)
         }
     }
 }

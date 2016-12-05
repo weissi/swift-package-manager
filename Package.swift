@@ -121,6 +121,9 @@ let package = Package(
             name: "BasicTests",
             dependencies: ["TestSupport", "TestSupportExecutable"]),
         Target(
+            name: "BasicPerformanceTests",
+            dependencies: ["Basic"]),
+        Target(
             name: "BuildTests",
             dependencies: ["Build", "TestSupport"]),
         Target(
@@ -130,13 +133,22 @@ let package = Package(
             name: "FunctionalTests",
             dependencies: ["Basic", "Utility", "PackageModel", "TestSupport"]),
         Target(
+            name: "FunctionalPerformanceTests",
+            dependencies: ["swift-build", "swift-package", "TestSupport"]),
+        Target(
             name: "GetTests",
             dependencies: ["Get", "TestSupport"]),
         Target(
             name: "PackageLoadingTests",
             dependencies: ["PackageLoading", "TestSupport"]),
         Target(
+            name: "PackageLoadingPerformanceTests",
+            dependencies: ["PackageLoading", "TestSupport"]),
+        Target(
             name: "PackageGraphTests",
+            dependencies: ["PackageGraph", "TestSupport"]),
+        Target(
+            name: "PackageGraphPerformanceTests",
             dependencies: ["PackageGraph", "TestSupport"]),
         Target(
             name: "POSIXTests",
@@ -177,6 +189,6 @@ products.append(
     Product(
         name: "SwiftPM",
         type: .Library(.Dynamic),
-        modules: ["libc", "POSIX", "Basic", "Utility", "SourceControl", "PackageDescription", "PackageModel", "PackageLoading", "Get", "PackageGraph", "Build", "Xcodeproj"]
+        modules: ["libc", "POSIX", "Basic", "Utility", "SourceControl", "PackageDescription", "PackageModel", "PackageLoading", "Get", "PackageGraph", "Build", "Xcodeproj", "Commands"]
     )
 )

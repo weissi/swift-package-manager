@@ -8,6 +8,8 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
+// FIXME: This file needs cleanup.
+
 public enum Verbosity: Int {
     case concise
     case verbose
@@ -100,6 +102,10 @@ import var libc.stdout
 import enum POSIX.Error
 
 public func system(_ arguments: String..., environment: [String:String] = [:], message: String?) throws {
+    try system(args: arguments, environment: environment, message: message)
+}
+
+public func system(args arguments: [String], environment: [String:String] = [:], message: String? = nil, quietly: Bool = false) throws {
     var out = ""
     do {
         if Utility.verbosity == .concise {
@@ -114,7 +120,7 @@ public func system(_ arguments: String..., environment: [String:String] = [:], m
             try system(arguments, environment: environment)
         }
     } catch {
-        if verbosity == .concise {
+        if verbosity == .concise && !quietly {
             print(prettyArguments(arguments, for: .stdOut), to: &stderr)
             print(out, to: &stderr)
         }

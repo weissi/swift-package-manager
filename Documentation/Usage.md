@@ -4,44 +4,187 @@
 
 * [Overview](README.md)
 * [**Usage**](Usage.md)
-  * [Create a Module](#create-a-module)
-  * [Create a Library](#create-a-library)
-  * [Define Dependencies](#define-dependencies)
-  * [Require System Libraries](#require-system-libraries)
-  * [Build an Executable](#build-an-executable)
   * [Create a Package](#create-a-package)
-  * [Distribute a Package](#distribute-a-package)
-  * [Handling version-specific logic](#version-specific-logic)
+    * [Create a library package](#create-a-library-package)
+    * [Create an executable package](#create-an-executable-package)
+  * [Define Dependencies](#define-dependencies)
+  * [Publish a package](#publish-a-package)
+  * [Require System Libraries](#require-system-libraries)
+  * [Working on Apps and Packages Side-by-Side](#working-on-apps-and-packages-side-by-side-top-of-the-tree-development)
+  * [Packaging legacy code](#packaging-legacy-code)
+  * [Handling version-specific logic](#handling-version-specific-logic)
+  * [Editable Packages](#editable-packages)
+  * [Package Pinning](#package-pinning)
 * [Reference](Reference.md)
 * [Resources](Resources.md)
 
 ---
 
-## Create a Module
+## Create a Package
 
-*Content to come.*
+Simply put: a package is a git repository with semantically versioned tags, that contains Swift sources and a `Package.swift` manifest file at its root.
 
----
+### Create a library package
 
-## Create a Library
+A library package contains code which other packages can use and depend on. To get started, create a directory and run `swift package init` command:
 
-*Content to come.*
+    $ mkdir MyPackage
+    $ cd MyPackage
+    $ swift package init # or swift package init --type library
+    $ swift build
+    $ swift test
 
----
+This will create the directory structure needed for a library package with a module and the corresponding test module to write unit tests. A library package can contain multiple modules as explained in [Module Format Reference](Reference.md#module-format-reference).
+
+### Create an executable package
+
+SwiftPM can create native binary which can be executed from command line. To get started: 
+
+    $ mkdir MyExecutable
+    $ cd MyExecutable
+    $ swift package init --type executable
+    $ swift build
+    $ .build/debug/MyExecutable
+    Hello, World!
+
+This creates the directory structure needed for executable modules. Any module can be turned into a executable module if there is a `main.swift` present in its sources. Complete reference for layout is [here](Reference.md#module-format-reference).
 
 ## Define Dependencies
 
-*Content to come.*
+All you need to do to depend on a package is define the dependency and the version, in manifest of your package.
+For e.g. if you want to use https://github.com/apple/example-package-playingcard as a dependency, add the github URL in dependencies of your `Package.swift`:
 
----
+```swift
+import PackageDescription
+
+let package = Package(
+    name: "MyPackage",
+    dependencies: [
+        .Package(url: "https://github.com/apple/example-package-playingcard.git", majorVersion: 3),
+    ]
+)
+```
+
+Now you should be able to `import PlayingCard` anywhere in your package and use the public APIs.
+
+## Publish a package
+
+To publish a package, you just have to initialize a git repository and create a semantic version tag:
+
+    $ git init
+    $ git add .
+    $ git remote add origin [github-URL]
+    $ git commit -m "Initial Commit"
+    $ git tag 1.0.0
+    $ git push origin master --tags
+
+Now other packages can depend on version 1.0.0 of this package using the github url.  
+Example of a published package: https://github.com/apple/example-package-fisheryates
 
 ## Require System Libraries
 
 You can link against system libraries using the package manager. To do so, there needs to be a special package for each system library that contains a module map for that library. Such a wrapper package does not contain any code of its own.
 
-Let’s see an example of using [IJG’s JPEG library](http://www.ijg.org) from an executable.
+Let's see an example of using [libgit2](https://libgit2.github.com) from an executable.
 
 First, create a directory called `example`, and initialize it as a package that builds an executable:
+
+    $ mkdir example
+    $ cd example
+    example$ swift package init --type executable
+
+Edit the `Sources/main.swift` so it consists of this code:
+
+```swift
+import Clibgit
+
+let options = git_repository_init_options()
+print(options)
+```
+
+To `import Clibgit`, the package manager requires
+that the libgit2 library has been installed by a system packager (eg. `apt`, `brew`, `yum`, etc.).
+The following files from the libgit2 system-package are of interest:
+
+    /usr/local/lib/libgit2.dylib      # .so on Linux
+    /usr/local/include/git2.h
+
+Swift packages that provide module maps for system libraries are handled differently from regular Swift packages.
+
+Note that the system library may be located elsewhere on your system, such as `/usr/` rather than `/usr/local/`.
+
+Create a directory called `Clibgit` next to the `example` directory and initialize it as a package
+that builds a system module:
+
+    example$ cd ..
+    $ mkdir Clibgit
+    $ cd Clibgit
+    Clibgit$ swift package init --type system-module
+
+This creates `Package.swift` and `module.modulemap` files in the directory.  Edit `Package.swift` and add `pkgConfig` parameter:
+
+```swift
+import PackageDescription
+
+let package = Package(
+    name: "Clibgit",
+    pkgConfig: "libgit2"
+)
+```
+
+The `pkgConfig` parameter helps SwiftPM in figuring out the include and library search paths for the system library.  
+Note: If you don't want to use pkgConfig paramater you can pass the path to directory containing library using commandline when building your app:
+
+    example$ swift build -Xlinker -L/usr/local/lib/
+
+Edit `module.modulemap` so it consists of the following:
+
+    module Clibgit [system] {
+      header "/usr/local/include/git2.h"
+      link "git2"
+      export *
+    }
+
+> The convention we hope the community will adopt is to prefix such modules with `C` and to camelcase the modules
+> as per Swift module name conventions. Then the community is free to name another module simply `libgit` which
+> contains more “Swifty” function wrappers around the raw C interface.
+
+Packages are Git repositories, tagged with semantic versions, containing a `Package.swift` file at their root.
+Initializing the package created a `Package.swift` file, but to make it a usable package we need to initialize
+a Git repository with at least one version tag:
+
+    Clibgit$ git init
+    Clibgit$ git add .
+    Clibgit$ git commit -m "Initial Commit"
+    Clibgit$ git tag 1.0.0
+
+Now to use the Clibgit package we must declare our dependency in our example app’s `Package.swift`:
+
+```swift
+import PackageDescription
+
+let package = Package(
+    name: "example",
+    dependencies: [
+        .Package(url: "../Clibgit", majorVersion: 1)
+    ]
+)
+```
+
+Here we used a relative URL to speed up initial development. If you push your module map package to a public repository you must change the above URL reference so that it is a full, qualified git URL.
+
+Now if we type `swift build` in our example app directory we will create an executable:
+
+    example$ swift build
+    …
+    example$ .build/debug/example
+    git_repository_init_options(version: 0, flags: 0, mode: 0, workdir_path: nil, description: nil, template_path: nil, initial_head: nil, origin_url: nil)
+    example$
+
+
+Let’s see another example of using [IJG’s JPEG library](http://www.ijg.org) from an executable which has some caveats.
+
+Create a directory called `example`, and initialize it as a package that builds an executable:
 
     $ mkdir example
     $ cd example
@@ -56,16 +199,7 @@ let jpegData = jpeg_common_struct()
 print(jpegData)
 ```
 
-To `import CJPEG`, the package manager requires
-that the JPEG library has been installed by a system packager (eg. `apt`, `brew`, `yum`, etc.).
-The following files from the JPEG system-package are of interest:
-
-    /usr/lib/libjpeg.so      # .dylib on OS X
-    /usr/include/jpeglib.h
-
-Swift packages that provide module maps for system libraries are handled differently from regular Swift packages.
-
-Note that the system library may be located elsewhere on your system, such as `/usr/local/` rather than `/usr/`.
+Install JPEG library using a system packager e.g `$ brew install jpeg`
 
 Create a directory called `CJPEG` next to the `example` directory and initialize it as a package
 that builds a system module:
@@ -79,18 +213,19 @@ This creates `Package.swift` and `module.modulemap` files in the directory.  Edi
 consists of the following:
 
     module CJPEG [system] {
-        header "/usr/include/jpeglib.h"
+        header "shim.h"
+        header "/usr/local/include/jpeglib.h"
         link "jpeg"
         export *
     }
 
-> The convention we hope the community will adopt is to prefix such modules with `C` and to camelcase the modules
-> as per Swift module name conventions. Then the community is free to name another module simply `JPEG` which
-> contains more “Swifty” function wrappers around the raw C interface.
+Create a `shim.h` file in the same directory and add `#include <stdio.h>` in it.
 
-Packages are Git repositories, tagged with semantic versions, containing a `Package.swift` file at their root.
-Initializing the package created a `Package.swift` file, but to make it a usable package we need to initialize
-a Git repository with at least one version tag:
+    $ echo '#include <stdio.h>' > shim.h 
+
+This is because `jpeglib.h` is not a correct module. You can also add `#include <stdio.h>` to the top of jpeglib.h and avoid creating `shim.h` file.
+
+Create a Git repository and tag it:
 
     CJPEG$ git init
     CJPEG$ git add .
@@ -103,110 +238,22 @@ Now to use the CJPEG package we must declare our dependency in our example app�
 import PackageDescription
 
 let package = Package(
+    name: "example",
     dependencies: [
         .Package(url: "../CJPEG", majorVersion: 1)
     ]
 )
 ```
 
-Here we used a relative URL to speed up initial development. If (we hope when) you push your module map package to a public repository you must change the above URL reference so that it is a full, qualified git URL.
-
 Now if we type `swift build` in our example app directory we will create an executable:
 
-    example$ swift build
+    example$ swift build -Xlinker -L/usr/local/lib/
     …
     example$ .build/debug/example
     jpeg_common_struct(err: nil, mem: nil, progress: nil, client_data: nil, is_decompressor: 0, global_state: 0)
     example$
 
-
-### Module Maps With Dependencies
-
-Let’s expand our example to include [JasPer](https://www.ece.uvic.ca/~frodo/jasper/), a JPEG-2000 library. It depends on The JPEG Library. First create a directory called `CJasPer` parallel to `CJPEG` and our example app, and initialize it as a package that builds a system module:
-
-    CJPEG$ cd ..
-    $ mkdir CJasPer
-    $ cd CJasPer
-    CJasPer$ swift package init --type system-module
-
-JasPer depends on JPEG, and thus any package that consumes `CJasPer` must know to also import `CJPEG`. We accomplish this by specifying the dependency in CJasPer’s `Package.swift`:
-
-```swift
-import PackageDescription
-
-let package = Package(
-    dependencies: [
-        .Package(url: "../CJPEG", majorVersion: 1)
-    ])
-```
-
-The module map for CJasPer is similar to that of CJPEG:
-
-    module CJasPer [system] {
-        header "/usr/local/include/jasper/jasper.h"
-        link "jasper"
-        export *
-    }
-
-**Take care**; the module map must specify all the headers that a system package uses, ***BUT*** you must not specify headers that are included from the headers you have already specified. For example with JasPer there are many headers but all the others are included from the umbrella header `jasper.h`. If you get the includes wrong you will get intermittent and hard to debug compile issues.
-
-A package is a Git repository with semantically versioned tags and a `Package.swift` file, so we must create the Git repository:
-
-    CJasPer$ git init
-    CJasPer$ git add .
-    CJasPer$ git commit -m "Initial Commit"
-    CJasPer$ git tag 1.0.0
-
-> **PLEASE NOTE** The package manager clones _the tag_. If you edit the `module.modulemap` and don’t `git tag -f 1.0.0` you will not build against your local changes.
-
-Back in our example app’s `Package.swift` we can change our dependency to `CJasPer`:
-
-```swift
-import PackageDescription
-
-let package = Package(
-    dependencies: [
-        .Package(url: "../CJasPer", majorVersion: 1)
-    ])
-```
-
-CJasPer depends on CJPEG, so we do not need to specify our dependency on CJPEG in our example app’s Package.swift.
-
-To test our JasPer support let’s amend our example’s `main.swift`:
-
-```swift
-import CJasPer
-
-guard let version = String.fromCString(jas_getversion()) else {
-    fatalError("Could not get JasPer version")
-}
-
-print("JasPer \(version)")
-```
-
-And run it:
-
-    example$ swift build
-    …
-    example$ .build/debug/example
-    JasPer 1.900.1
-    example$
-
-
-> Note that we do not call the module `CLibjasper`. In general, avoid the lib prefix unless the authors of the package typically always refer to it that way. A good rule of thumb is to look at the header files, here we can see the header is called simply "jasper.h". In the event of non-typical headers (eg `jpeglib.h`) refer to the project homepage, the authors of the JPEG library refer to it as “The JPEG library” and not “libjpeg” or “jpeglib”. Pay attention to capitalization; it is `CJPEG` and not `CJpeg`, because JPEG is an acronym and is typically spelled all-caps. It is `CJasPer` and not `CJasper` because the project itself refers to the library as “JasPer” in all their documentation.
-
-On some platforms, the above steps fail with:
-
-    <module-includes>:1:10: note: in file included from <module-includes>:1:
-    #include "/usr/include/jpeglib.h"
-             ^
-    /usr/include/jpeglib.h:792:3: error: unknown type name 'size_t'
-      size_t free_in_buffer;        /* # of byte spaces remaining in buffer */
-      ^
-
-This is because `jpeglib.h` is not a correct module. To fix this you need to add `#include <stdio.h>` to the top of jpeglib.h.
-
-JPEG lib itself needs to be patched, but since this situation will be common we intend to add a workaround system in module packages.
+We have to specify path where the libjpeg is present using `-Xlinker` because there is no pkg-config file for it. We plan to provide solution to avoid passing the flag in commandline.
 
 ### Packages That Provide Multiple Libraries
 
@@ -253,61 +300,40 @@ At this time you will need to make another module map package to represent syste
 
 For example, `libarchive` optionally depends on `xz`, which means it can be compiled with `xz` support, but it is not required. To provide a package that uses libarchive with xz you must make a `CArchive+CXz` package that depends on `CXz` and provides `CArchive`.
 
----
 
-## Build an Executable
+## Working on Apps and Packages Side-by-Side (Top of the tree development)
 
-*Content to come.*
+If you are developing an app that consumes a package and you need to work on that package simultaneously then you can use editable packages as a workaround until we have dedicated tooling for it.
 
----
-
-## Create a Package
-
-Simply put: a package is a git repository with semantically versioned tags, that contains Swift sources and a `Package.swift` manifest file at its root.
-
-### Turning a Library Module into an External Package
-
-If you are building an app with several modules, at some point you may decide to make that module into an external package. Doing this makes that code available as a dependable library that others may use.
-
-Doing so with the package manager is relatively simple:
-
- 1. Create a new repository on GitHub
- 2. In a terminal, step into the module directory
- 3. `git init`
- 4. `git remote add origin [github-URL]`
- 5. `git add .`
- 6. `git commit --message="…"`
- 7. `git tag 1.0.0`
- 8. `git push origin master --tags`
-
-Now delete the subdirectory, and amend your `Package.swift` so that its `package` declaration includes:
+Consider you have a package `foo` which depends on `bar`.
 
 ```swift
+import PackageDescription
+
 let package = Package(
+    name: "foo",
     dependencies: [
-        .Package(url: "…", versions: Version(1,0,0)..<Version(2,0,0)),
+        .Package(url: "http://url/to/bar", majorVersion: 1),
     ]
 )
 ```
 
-Now type `swift build`.
+If you want to develop on `bar` as well as `foo`, navigate to `foo` directory and put `bar` in edit mode:
 
+    $ cd foo
+    $ swift package edit bar --revision master
 
-### Working on Apps and Packages Side-by-Side
+Then remove the `bar` directory created in `Packages/` and instead create a symbolic link to the path of `bar` package on your filesystem. This will make sure the package manager uses the sources in your local `bar`, and does not try and resolve `bar` based on the version specification in the manifest.
 
-If you are developing an app that consumes a package and you need to work on that package simultaneously then you have several options:
+    $ cd Packages
+    $ rm -r bar
+    $ ln -s /path/to/bar bar
 
- 1. Edit the sources that the package manager clones.
+Now go ahead and make changes in `bar`, building `foo` will pick `bar` sources from the local copy of `bar` package. Once you're done editing you can unedit the package:
 
-	The sources are cloned visibly into `./Packages` to facilitate this.
+    $ swift package unedit bar #--force
 
- 2. Alter your `Package.swift` so it refers to a local clone of the package.
-
-	This can be tedious however as you will need to force an update every time you make a change, including updating the version tag. Both options are currently non-ideal since it is easy to commit code that will break for other members of your team, for example, if you change the sources for `Foo` and then commit a change to your app that uses those new changes but you have not committed those changes to `Foo` then you have caused dependency hell for your co-workers.
-
-	It is our intention to provide tooling to prevent such situations, but for now please be aware of the caveats.
-
-### Packaging legacy code
+## Packaging legacy code
 
 You may be working with code that builds both as a package and not. For example, you may be packaging a project that also builds with Xcode.
 
@@ -318,12 +344,6 @@ In these cases, you can use the build configuration `SWIFT_PACKAGE` to condition
 import Foundation
 #endif
 ```
-
----
-
-## Distribute a Package
-
-*Content to come.*
 
 ## Handling version-specific logic
 
@@ -397,3 +417,101 @@ manifest API).
 It is *not* expected the packages would ever use this feature unless absolutely
 necessary to support existing clients. In particular, packages *should not*
 adopt this syntax for tagging versions supporting the _latest GM_ Swift version.
+
+## Editable Packages
+
+Swift package manager supports editing dependencies, when your work requires making a change to one of your dependencies (for example, to fix a bug, or add a new API). The package manager moves the dependency into a location under `Packages/` directory where it can be edited.
+
+For the packages which are in the editable state, `swift build` will always use the exact sources in this directory to build, regardless of its state, git repository status, tags, or the tag desired by dependency resolution. In other words, this will _just build_ against the sources that are present. When an editable package is present, it will be used to satisfy all instances of that package in the depencency graph. It is possible to edit all, some, or none of the packages in a dependency graph, without restriction.
+
+Editable packages are best used to do experimentation with dependency code or create and submit a patch in the dependency owner's repository (upstream).  
+There are two ways to put a package in editable state:
+
+    $ swift package edit Foo --branch bugFix
+
+This will create a branch called `bugFix` from currently resolved version and put the dependency Foo in `Packages/` directory. 
+
+    $ swift package edit Foo --revision 969c6a9
+
+This is similar to previous version except that the Package Manager will leave the dependency at a detched HEAD on the specified revision.
+
+Note: It is necessary to provide either a branch or revision option. The rationale here is that checking out the currently resolved version would leave the repository on a detached HEAD, which is confusing. Explict options makes the action predictable for user.
+
+Once a package is in an editable state, you can navigate to the directory `Packages/Foo` to make changes, build and then push the changes or open a pull request to the upstream repository.
+
+You can end editing a package using `unedit` command:
+
+    $ swift package unedit Foo
+
+This will remove the edited dependency from `Packages/` and put the originally resolved version back. 
+
+This command fails if there are uncommited changes or changes which are not pushed to the remote repository. If you want to discard these changes and unedit, you can use the `--force` option:
+
+    $ swift package unedit Foo --force
+
+You can read the Swift evolution proposal [here](https://github.com/apple/swift-evolution/blob/master/proposals/0082-swiftpm-package-edit.md).
+
+## Package Pinning
+
+Swift package manager has package pinning feature, also called _dependency locking_ in some dependency managers. Pinning refers to the practice of controlling exactly which specific version of a dependency is selected by the dependency resolution algorithm, independent from the semantic versioning specification. Thus, it is a way of instructing the package manager to select a particular version from among all of the versions of a package which could be chosen while honoring the dependency constraints. 
+
+The package manager uses a file named `Package.pins`("pins file") to record the pinning information. The exact file format is unspecified/implementation defined, however, in practice it is a JSON data file. This file may be checked into SCM by the user, so that its effects apply to all users of the package. However, it may also be maintained only locally (e.g., placed in the `.gitignore` file). We intend to leave it to package authors to decide which use case is best for their project. We will recommend that it not be checked in by library authors, at least for released versions, since pins are not inherited and thus this information may be confusing.
+
+In the presence of a top-level `Package.pins` file, the package manager will respect the pinned dependencies recorded in the file whenever it needs to do dependency resolution (e.g., on the initial checkout or when updating).
+In the absence of a top-level `Package.pins` file, the package manager will operate based purely on the requirements specified in the package manifest, but will then automatically record the choices it makes into a `Package.pins` file as part of the _automatic pinning_ feature. 
+
+### Automatic Pinning
+
+The package manager has automatic pinning enabled by default (this is equivalent to `swift package pin --enable-autopin`). The package manager will automatically record all package dependencies in the pins file. Package project owners can choose to disable this if they wish to have more fine grained control over their pinning behavior, for e.g. pin only certain dependencies.
+
+The automatic pinning behavior works as follows:
+
+* When enabled, the package manager will write all dependency versions into the pin file after any operation which changes the set of active working dependencies (for example, if a new dependency is added).
+
+* A package author can still change the individual pinned versions using the package pin commands (explained below), these will simply update the pinned state.
+
+* Some commands do not make sense when automatic pinning is enabled; for example, it is not possible to `unpin` and attempts to do so will produce an error.
+
+Since package pin information is *not* inherited across dependencies, our recommendation is that packages which are primarily intended to be consumed by other developers either disable automatic pinning or put the `Package.pins` file into `.gitignore`, so that users are not confused why they get different versions of dependencies that are those being used by the library authors while they develop.
+
+### Pinning Commands (Manual Pinning)
+
+1. Pinning:
+
+        $ swift package pin ( --all | <package-name> [--version <version>] ) [--message <message>]
+        
+    The `package-name` refers to the name of the package as specified in its manifest.
+        
+    This command pins one or all dependencies. The command which pins a single version can optionally take a specific version to pin to, if unspecified (or with `--all`) the behavior is to pin to the current package version in use. Examples:
+        
+   * `$ swift package pin --all` - pins all the dependencies. 
+   * `$ swift package pin Foo` - pins Foo at current resolved version.  
+   * `$ swift package pin Foo --version 1.2.3` - pins `Foo` at 1.2.3. The specified version should be valid and resolvable.  
+        
+   The `--message` option is an optional argument to document the reason for pinning a dependency. This could be helpful for user to later remember why a dependency was pinned. Example:
+        
+        $ swift package pin Foo --message "The patch updates for Foo are really unstable and need screening."
+
+2. Toggle automatic pinning:
+
+        $ swift package pin ( [--enable-autopin] | [--disable-autopin] )
+
+    These will enable or disable automatic pinning for the package (this state is recorded in the `Package.pins` file).
+
+3. Unpinning:
+
+        $ swift package unpin [<package-name>]
+
+    This is the counterpart to the pin command, and unpins packages.
+
+    Note: It is an error to attempt to unpin when automatic pinning is enabled.
+
+4. Package update with pinning:
+
+        $ swift package update [--repin]
+
+    The default behavior is to update all unpinned packages to the latest possible versions which can be resolved while respecting the existing pins.
+    
+    The `--repin` argument can be used to lift the version pinning restrictions. In this case, the behavior is that all packages are updated, and packages which were previously pinned are then repinned to the latest resolved versions.
+    
+    When automatic pinning is enabled, package update act as if `--repin` was specified.

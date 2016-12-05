@@ -26,8 +26,13 @@ class MiscellaneousTestCase: XCTestCase {
 
         fixture(name: "DependencyResolution/External/Simple", tags: ["1.3.5"]) { prefix in
             let output = try executeSwiftBuild(prefix.appending(component: "Bar"))
-            let lines = output.characters.split(separator: "\n").map(String.init)
-            XCTAssertTrue(lines.contains("Resolved version: 1.3.5"))
+            if SwiftPMProduct.enableNewResolver {
+                XCTAssertTrue(output.contains("Resolving"))
+                XCTAssertTrue(output.contains("at 1.3.5"))
+            } else {
+                let lines = output.characters.split(separator: "\n").map(String.init)
+                XCTAssertTrue(lines.contains("Resolved version: 1.3.5"))
+            }
         }
     }
 
@@ -372,8 +377,6 @@ class MiscellaneousTestCase: XCTestCase {
     }
 
     func testSwiftTestParallel() throws {
-        // Disabled till https://bugs.swift.org/browse/SR-3122 is fixed.
-    #if false
         // Running swift-test fixtures on linux is not yet possible.
       #if os(macOS)
         fixture(name: "Miscellaneous/ParallelTestsPkg") { prefix in
@@ -387,7 +390,6 @@ class MiscellaneousTestCase: XCTestCase {
             XCTAssert(output.contains("100%"))
         }
       #endif
-    #endif
     }
 
     func testExecutableAsBuildOrderDependency() throws {
