@@ -253,7 +253,7 @@ class MiscellaneousTestCase: XCTestCase {
             let execpath = [prefix.appending(components: ".build", "debug", "Foo").asString]
 
             XCTAssertBuilds(prefix)
-            var output = try popen(execpath)
+            var output = try popen(execpath, environment: [:])
             XCTAssertEqual(output, "Hello\n")
 
             // we need to sleep at least one second otherwise
@@ -263,7 +263,7 @@ class MiscellaneousTestCase: XCTestCase {
             try localFileSystem.writeFileContents(prefix.appending(components: "Bar", "Bar.swift"), bytes: "public let bar = \"Goodbye\"\n")
 
             XCTAssertBuilds(prefix)
-            output = try popen(execpath)
+            output = try popen(execpath, environment: [:])
             XCTAssertEqual(output, "Goodbye\n")
         }
     }
@@ -278,7 +278,7 @@ class MiscellaneousTestCase: XCTestCase {
 
             let packageRoot = prefix.appending(component: "app")
             XCTAssertBuilds(packageRoot)
-            var output = try popen(execpath)
+            var output = try popen(execpath, environment: [:])
             XCTAssertEqual(output, "♣︎K\n♣︎Q\n♣︎J\n♣︎10\n♣︎9\n♣︎8\n♣︎7\n♣︎6\n♣︎5\n♣︎4\n")
 
             // we need to sleep at least one second otherwise
@@ -289,7 +289,7 @@ class MiscellaneousTestCase: XCTestCase {
             try localFileSystem.writeFileContents(path.appending(components: "src", "Fisher-Yates_Shuffle.swift"), bytes: "public extension Collection{ func shuffle() -> [Iterator.Element] {return []} }\n\npublic extension MutableCollection where Index == Int { mutating func shuffleInPlace() { for (i, _) in enumerated() { self[i] = self[0] } }}\n\npublic let shuffle = true")
 
             XCTAssertBuilds(prefix.appending(component: "app"))
-            output = try popen(execpath)
+            output = try popen(execpath, environment: [:])
             XCTAssertEqual(output, "♠︎A\n♠︎A\n♠︎A\n♠︎A\n♠︎A\n♠︎A\n♠︎A\n♠︎A\n♠︎A\n♠︎A\n")
         }
     }
@@ -304,7 +304,7 @@ class MiscellaneousTestCase: XCTestCase {
 
             let packageRoot = prefix.appending(component: "root")
             XCTAssertBuilds(prefix.appending(component: "root"))
-            var output = try popen(execpath)
+            var output = try popen(execpath, environment: [:])
             XCTAssertEqual(output, "Hello\n")
 
             // we need to sleep at least one second otherwise
@@ -315,7 +315,7 @@ class MiscellaneousTestCase: XCTestCase {
             try localFileSystem.writeFileContents(path.appending(components: "Foo.swift"), bytes: "public let foo = \"Goodbye\"")
 
             XCTAssertBuilds(prefix.appending(component: "root"))
-            output = try popen(execpath)
+            output = try popen(execpath, environment: [:])
             XCTAssertEqual(output, "Goodbye\n")
         }
     }
@@ -360,7 +360,7 @@ class MiscellaneousTestCase: XCTestCase {
         XCTAssertTrue(localFileSystem.isDirectory(packageRoot))
 
         // Run package init.
-        _ = try SwiftPMProduct.SwiftPackage.execute(["init"], chdir: packageRoot, env: [:], printIfError: true)
+        _ = try SwiftPMProduct.SwiftPackage.execute(["init"], chdir: packageRoot, printIfError: true)
         // Try building it.
         XCTAssertBuilds(packageRoot)
         XCTAssertFileExists(packageRoot.appending(components: ".build", "debug", "some_package.swiftmodule"))
@@ -369,9 +369,9 @@ class MiscellaneousTestCase: XCTestCase {
     func testSecondBuildIsNullInModulemapGen() throws {
         // Make sure that swiftpm doesn't rebuild second time if the modulemap is being generated.
         fixture(name: "ClangModules/SwiftCMixed") { prefix in
-            var output = try executeSwiftBuild(prefix, configuration: .Debug, printIfError: true, Xcc: [], Xld: [], Xswiftc: [], env: [:])
+            var output = try executeSwiftBuild(prefix, printIfError: true)
             XCTAssertFalse(output.isEmpty)
-            output = try executeSwiftBuild(prefix, configuration: .Debug, printIfError: true, Xcc: [], Xld: [], Xswiftc: [], env: [:])
+            output = try executeSwiftBuild(prefix, printIfError: true)
             XCTAssertTrue(output.isEmpty)
         }
     }
@@ -402,9 +402,37 @@ class MiscellaneousTestCase: XCTestCase {
     func testOverridingSwiftcArguments() throws {
 #if os(macOS)
         fixture(name: "Miscellaneous/OverrideSwiftcArgs") { prefix in
-            try executeSwiftBuild(prefix, configuration: .Debug, printIfError: true, Xcc: [], Xld: [], Xswiftc: ["-target", "x86_64-apple-macosx10.20"], env: [:])
+            try executeSwiftBuild(prefix, printIfError: true, Xswiftc: ["-target", "x86_64-apple-macosx10.20"])
         }
 #endif
+    }
+
+    func testPkgConfigClangModules() throws {
+        fixture(name: "Miscellaneous/PkgConfig") { prefix in
+            _ = try executeSwiftBuild(prefix.appending(component: "SystemModule"))
+            XCTAssertFileExists(prefix.appending(components: "SystemModule", ".build", "debug", "libSystemModule.\(Product.dynamicLibraryExtension)"))
+
+            let pcFile = prefix.appending(component: "libSystemModule.pc")
+
+            let stream = BufferedOutputByteStream()
+            stream <<< "prefix=\(prefix.appending(component: "SystemModule").asString)\n"
+            stream <<< "exec_prefix=${prefix}\n"
+            stream <<< "libdir=${exec_prefix}/.build/debug\n"
+            stream <<< "includedir=${prefix}/Sources/include\n"
+            stream <<< "Name: SystemModule\n"
+            stream <<< "URL: http://127.0.0.1/\n"
+            stream <<< "Description: The one and only SystemModule\n"
+            stream <<< "Version: 1.10.0\n"
+            stream <<< "Cflags: -I${includedir}\n"
+            stream <<< "Libs: -L${libdir} -lSystemModule\n"
+            try localFileSystem.writeFileContents(pcFile, bytes: stream.bytes)
+
+            let moduleUser = prefix.appending(component: "SystemModuleUserClang")
+            let env = ["PKG_CONFIG_PATH": prefix.asString]
+            _ = try executeSwiftBuild(moduleUser, env: env)
+
+            XCTAssertFileExists(moduleUser.appending(components: ".build", "debug", "SystemModuleUserClang"))
+        }
     }
 
     static var allTests = [
@@ -439,5 +467,6 @@ class MiscellaneousTestCase: XCTestCase {
         ("testSwiftTestParallel", testSwiftTestParallel),
         ("testInitPackageNonc99Directory", testInitPackageNonc99Directory),
         ("testOverridingSwiftcArguments", testOverridingSwiftcArguments),
+        ("testPkgConfigClangModules", testPkgConfigClangModules),
     ]
 }

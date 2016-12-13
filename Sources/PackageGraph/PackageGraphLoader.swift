@@ -11,6 +11,7 @@
 import Basic
 import PackageModel
 import PackageLoading
+import Utility
 
 // FIXME: This doesn't belong here.
 import func POSIX.exit
@@ -58,14 +59,15 @@ public struct PackageGraphLoader {
     public init() { }
 
     /// Load the package graph for the given package path.
-    public func load(rootManifest: Manifest, externalManifests: [Manifest], fileSystem: FileSystem = localFileSystem) throws -> PackageGraph {
-        let allManifests = externalManifests + [rootManifest]
+    public func load(rootManifests: [Manifest], externalManifests: [Manifest], fileSystem: FileSystem = localFileSystem) throws -> PackageGraph {
+        let rootManifestSet = Set(rootManifests)
+        let allManifests = externalManifests + rootManifests
 
         // Create the packages and convert to modules.
         var packages: [Package] = []
         var map: [Package: [Module]] = [:]
-        for (i, manifest) in allManifests.enumerated() {
-            let isRootPackage = (i + 1) == allManifests.count
+        for manifest in allManifests {
+            let isRootPackage = rootManifestSet.contains(manifest)
 
             // Derive the path to the package.
             //
@@ -116,13 +118,12 @@ public struct PackageGraphLoader {
         // Connect up cross-package module dependencies.
         fillModuleGraph(packages)
     
-        let rootPackage = packages.last!
-        let externalPackages = packages.dropLast(1)
+        let (rootPackages, externalPackages) = packages.split { rootManifests.contains($0.manifest) }
 
         let modules = try recursiveDependencies(packages.flatMap{ map[$0] ?? [] })
         let externalModules = try recursiveDependencies(externalPackages.flatMap{ map[$0] ?? [] })
 
-        return PackageGraph(rootPackage: rootPackage, modules: modules, externalModules: Set(externalModules))
+        return PackageGraph(rootPackages: rootPackages, modules: modules, externalModules: Set(externalModules))
     }
 }
 

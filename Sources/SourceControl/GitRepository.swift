@@ -14,7 +14,6 @@ import Utility
 
 import func POSIX.getenv
 import enum POSIX.Error
-import class Foundation.ProcessInfo
 
 enum GitRepositoryProviderError: Swift.Error {
     case gitCloneFailure(url: String, path: AbsolutePath)
@@ -45,10 +44,9 @@ public class GitRepositoryProvider: RepositoryProvider {
         do {
             // FIXME: We need infrastructure in this subsystem for reporting
             // status information.
-            let env = ProcessInfo.processInfo.environment
             try system(
                 Git.tool, "clone", "--bare", repository.url, path.asString,
-                environment: env, message: nil)
+                message: nil)
         } catch POSIX.Error.exitStatus {
             throw GitRepositoryProviderError.gitCloneFailure(url: repository.url, path: path)
         }
@@ -75,9 +73,8 @@ public class GitRepositoryProvider: RepositoryProvider {
             let origin = "origin"
             // In destination repo remove the remote which will be pointing to the source repo.
             let clone = GitRepository(path: destinationPath)
-            try clone.remove(remote: origin)
-            // Add the original remote to the new clone.
-            try clone.add(remote: origin, url: repository.url)
+            // Set the original remote to the new clone.
+            try clone.setURL(remote: origin, url: repository.url)
             // FIXME: This is unfortunate that we have to fetch to update remote's data.
             try clone.fetch()
         } else {
@@ -227,22 +224,13 @@ public class GitRepository: Repository, WorkingCheckout {
         }
     }
 
-    /// Adds a remote to the git repository.
+    /// Changes URL for the remote.
     ///
     /// - parameters:
-    ///   - remote: The name of the remote. It shouldn't already be present.
-    ///   - url: The url of the remote.
-    func add(remote: String, url: String) throws {
-        try runCommandQuietly([Git.tool, "-C", path.asString, "remote", "add", remote, url])
-    }
-
-    /// Removes a remote from the git repository.
-    ///
-    /// - parameters:
-    ///   - remote: The name of the remote to be removed. It should already be present.
-    ///   - url: the url of the remote.
-    func remove(remote: String) throws {
-        try runCommandQuietly([Git.tool, "-C", path.asString, "remote", "remove", remote])
+    ///   - remote: The name of the remote to operate on. It should already be present.
+    ///   - url: The new url of the remote.
+    func setURL(remote: String, url: String) throws {
+        try runCommandQuietly([Git.tool, "-C", path.asString, "remote", "set-url", remote, url])
     }
 
     /// Gets the current list of remotes of the repository.

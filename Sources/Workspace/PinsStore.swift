@@ -50,7 +50,7 @@ public struct PinsStore {
     fileprivate(set) var pinsMap: [String: Pin]
 
     /// Autopin enabled or disabled. Autopin is enabled by default.
-    fileprivate(set) var autoPin: Bool
+    public fileprivate(set) var autoPin: Bool
 
     /// The current pins.
     public var pins: AnySequence<Pin> {
@@ -121,8 +121,7 @@ public struct PinsStore {
     /// Creates constraints based on the pins in the store.
     public func createConstraints() -> [RepositoryPackageConstraint] {
         return pins.map {
-            // FIXME: This is broken, successor isn't correct and should be eliminated. (SR-3171)
-            RepositoryPackageConstraint(container: $0.repository, versionRequirement: .range($0.version..<$0.version.successor()))
+            RepositoryPackageConstraint(container: $0.repository, versionRequirement: .exact($0.version))
         }
     }
 }
@@ -182,7 +181,7 @@ extension PinsStore {
         data["pins"] = .array(pins.sorted{ $0.package < $1.package  }.map{ $0.toJSON() })
         data["autoPin"] = .bool(autoPin)
         // FIXME: This should write atomically.
-        try fileSystem.writeFileContents(pinsFile, bytes: JSON.dictionary(data).toBytes())
+        try fileSystem.writeFileContents(pinsFile, bytes: JSON.dictionary(data).toBytes(prettyPrint: true))
     }
 }
 

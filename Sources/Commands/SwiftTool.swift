@@ -15,6 +15,7 @@ import PackageGraph
 import PackageModel
 import POSIX
 import Utility
+import Workspace
 
 private class ToolWorkspaceDelegate: WorkspaceDelegate {
     func fetchingMissingRepositories(_ urls: Set<String>) {
@@ -175,8 +176,17 @@ public class SwiftTool<Options: ToolOptions> {
             return workspace
         }
         let delegate = ToolWorkspaceDelegate()
-        _workspace = try Workspace(rootPackage: try getPackageRoot(), dataPath: buildPath, manifestLoader: manifestLoader, delegate: delegate)
-        return _workspace!
+        let rootPackage = try getPackageRoot()
+        let workspace = try Workspace(
+            dataPath: buildPath,
+            editablesPath: rootPackage.appending(component: "Packages"),
+            pinsFile: rootPackage.appending(component: "Package.pins"),
+            manifestLoader: manifestLoader,
+            delegate: delegate
+        )
+        workspace.registerPackage(at: rootPackage)
+        _workspace = workspace
+        return workspace
     }
 
     /// Execute the tool.
@@ -210,7 +220,7 @@ public class SwiftTool<Options: ToolOptions> {
             // Fetch and load the manifests.
             let (rootManifest, externalManifests) = try packagesDirectory.loadManifests()
         
-            return try PackageGraphLoader().load(rootManifest: rootManifest, externalManifests: externalManifests)
+            return try PackageGraphLoader().load(rootManifests: [rootManifest], externalManifests: externalManifests)
         }
     }
 
@@ -244,6 +254,8 @@ private func findPackageRoot() -> AbsolutePath? {
 }
 
 private func getEnvBuildPath() -> AbsolutePath? {
+    // Don't rely on build path from env for SwiftPM's own tests.
+    guard getenv("IS_SWIFTPM_TEST") == nil else { return nil }
     guard let env = getenv("SWIFT_BUILD_PATH") else { return nil }
     return AbsolutePath(env, relativeTo: currentWorkingDirectory)
 }
