@@ -34,12 +34,16 @@ class ManifestTests: XCTestCase {
         }
     }
 
+    private func loadManifest(_ contents: ByteString, baseURL: String? = nil) throws -> Manifest {
+        let fs = InMemoryFileSystem()
+        let manifestPath = AbsolutePath.root.appending(component: Manifest.filename)
+        try fs.writeFileContents(manifestPath, bytes: contents)
+        return try manifestLoader.loadFile(path: manifestPath, baseURL: baseURL ?? AbsolutePath.root.asString, version: nil, fileSystem: fs)
+    }
+
     private func loadManifest(_ contents: ByteString, baseURL: String? = nil, line: UInt = #line, body: (Manifest) -> Void) {
         do {
-            let fs = InMemoryFileSystem()
-            let manifestPath = AbsolutePath.root.appending(component: Manifest.filename)
-            try fs.writeFileContents(manifestPath, bytes: contents)
-            body(try manifestLoader.loadFile(path: manifestPath, baseURL: baseURL ?? AbsolutePath.root.asString, version: nil, fileSystem: fs))
+            body(try loadManifest(contents, baseURL: baseURL))
         } catch {
             XCTFail("Unexpected error: \(error)", file: #file, line: line)
         }
@@ -84,12 +88,12 @@ class ManifestTests: XCTestCase {
     }
 
     func testNoManifest() {
-        XCTAssertThrows(PackageModel.Package.Error.noManifest("/non-existent-file")) {
-            _ = try manifestLoader.loadFile(path: AbsolutePath("/non-existent-file"), baseURL: "/", version: nil)
+        XCTAssertThrows(PackageModel.Package.Error.noManifest(baseURL: "/foo", version: nil)) {
+            _ = try manifestLoader.loadFile(path: AbsolutePath("/non-existent-file"), baseURL: "/foo", version: nil)
         }
 
-        XCTAssertThrows(PackageModel.Package.Error.noManifest("/non-existent-file")) {
-            _ = try manifestLoader.loadFile(path: AbsolutePath("/non-existent-file"), baseURL: "/", version: nil, fileSystem: InMemoryFileSystem())
+        XCTAssertThrows(PackageModel.Package.Error.noManifest(baseURL: "/bar", version: "1.0.0")) {
+            _ = try manifestLoader.loadFile(path: AbsolutePath("/non-existent-file"), baseURL: "/bar", version: "1.0.0", fileSystem: InMemoryFileSystem())
         }
     }
 
@@ -108,7 +112,7 @@ class ManifestTests: XCTestCase {
         fixture(name: "Miscellaneous/PackageWithInvalidTargets") { (prefix: AbsolutePath) in
             do {
                 let manifest = try manifestLoader.loadFile(path: prefix.appending(component: "Package.swift"), baseURL: prefix.asString, version: nil)
-                _ = try PackageBuilder(manifest: manifest, path: prefix).construct(includingTestModules: false)
+                _ = try PackageBuilder(manifest: manifest, path: prefix, dependencies: []).construct(includingTestModules: false)
             } catch ModuleError.modulesNotFound(let moduleNames) {
                 XCTAssertEqual(Set(moduleNames), Set(["Bake", "Fake"]))
             } catch {
@@ -154,12 +158,81 @@ class ManifestTests: XCTestCase {
             XCTAssertEqual(manifest.name, "Trivial")
         }
     }
+
+    func testEmptyManifest() throws {
+        do {
+            let stream = BufferedOutputByteStream()
+            stream <<< "import PackageDescription" <<< "\n"
+            let manifest = try loadManifest(stream.bytes)
+            XCTFail("Unexpected success \(manifest)")
+        } catch ManifestParseError.emptyManifestFile {}
+
+        do {
+            let manifest = try loadManifest("")
+            XCTFail("Unexpected success \(manifest)")
+        } catch ManifestParseError.emptyManifestFile {}
+    }
+
+    func testRuntimeManifestErrors() throws {
+        let stream = BufferedOutputByteStream()
+        stream <<< "import PackageDescription" <<< "\n"
+        stream <<< "let package = Package(" <<< "\n"
+        stream <<< "   name: \"Foo\"," <<< "\n"
+        stream <<< "           dependencies: [" <<< "\n"
+        stream <<< "              .Package(url: \"/url\", \"1.0,0\")" <<< "\n"
+        stream <<< "           ])" <<< "\n" <<< "\n"
+
+        do {
+            let manifest = try loadManifest(stream.bytes)
+            XCTFail("Unexpected success \(manifest)")
+        } catch ManifestParseError.runtimeManifestErrors(let errors) {
+            XCTAssertEqual(errors, ["Invalid version string: 1.0,0"])
+        }
+    }
+
+    func testSwiftInterpreterErrors() throws {
+        // Forgot importing package description.
+        var stream = BufferedOutputByteStream()
+        stream <<< "let package = Package(" <<< "\n"
+        stream <<< "   name: \"Foo\")"
+
+        assertManifestContainsError(error: "use of unresolved identifier 'Package'", stream: stream)
+
+        // Missing name in package object.
+        stream = BufferedOutputByteStream()
+        stream <<< "import PackageDescription" <<< "\n"
+        stream <<< "let package = Package()" <<< "\n"
+
+        assertManifestContainsError(error: "missing argument for parameter 'name' in call", stream: stream)
+
+        // Random syntax error.
+        stream = BufferedOutputByteStream()
+        stream <<< "import PackageDescription" <<< "\n"
+        stream <<< "let package = Package(name: \"foo\")'" <<< "\n"
+
+        assertManifestContainsError(error: "error: unterminated string literal", stream: stream)
+    }
+
+    /// Helper to check for swift interpreter errors while loading manifest.
+    private func assertManifestContainsError(error: String, stream: BufferedOutputByteStream, file: StaticString = #file, line: UInt = #line) {
+        do {
+            let manifest = try loadManifest(stream.bytes)
+            XCTFail("Unexpected success \(manifest)", file: file, line: line)
+        } catch ManifestParseError.invalidManifestFormat(let errors) {
+            XCTAssertTrue(errors.contains(error), "\nActual:\n\(errors) \n\nExpected: \(error)", file: file, line: line)
+        } catch {
+            XCTFail("Unexpected error \(error)", file: file, line: line)
+        }
+    }
     
     static var allTests = [
+        ("testEmptyManifest", testEmptyManifest),
         ("testManifestLoading", testManifestLoading),
         ("testNoManifest", testNoManifest),
         ("testNonexistentBaseURL", testNonexistentBaseURL),
         ("testInvalidTargetName", testInvalidTargetName),
         ("testVersionSpecificLoading", testVersionSpecificLoading),
+        ("testRuntimeManifestErrors", testRuntimeManifestErrors),
+        ("testSwiftInterpreterErrors", testSwiftInterpreterErrors),
     ]
 }

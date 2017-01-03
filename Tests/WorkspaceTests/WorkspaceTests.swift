@@ -32,6 +32,7 @@ private class TestWorkspaceDelegate: WorkspaceDelegate {
     /// Map of checkedout repos with key as repository and value as the reference (version or revision).
     var checkedOut = [String: String]()
     var removed = [String]()
+    var warnings = [String]()
 
     func fetchingMissingRepositories(_ urls: Set<String>) {
     }
@@ -50,6 +51,10 @@ private class TestWorkspaceDelegate: WorkspaceDelegate {
 
     func removing(repository: String) {
         removed.append(repository)
+    }
+
+    func warning(message: String) {
+        warnings.append(message)
     }
 }
 
@@ -420,8 +425,11 @@ final class WorkspaceTests: XCTestCase {
             XCTAssert(localFileSystem.exists(buildArtifact))
 
             try workspace.reset()
-            // Everything should go away.
-            XCTAssertFalse(localFileSystem.exists(workspace.dataPath))
+            // Everything should go away but cache directory should be present.
+            XCTAssertFalse(localFileSystem.exists(buildArtifact))
+            XCTAssertFalse(localFileSystem.exists(checkoutPath))
+            XCTAssertTrue(localFileSystem.exists(workspace.dataPath))
+            XCTAssertTrue(workspace.dependencies.map{$0}.isEmpty)
         }
     }
 
@@ -1059,13 +1067,14 @@ final class WorkspaceTests: XCTestCase {
             ],
             fs: fs
         )
+        let delegate = TestWorkspaceDelegate()
         let provider = manifestGraph.repoProvider!
 
         func newWorkspace() -> Workspace {
             return try! Workspace.createWith(
                 rootPackage: path,
                 manifestLoader: manifestGraph.manifestLoader,
-                delegate: TestWorkspaceDelegate(),
+                delegate: delegate,
                 fileSystem: fs,
                 repositoryProvider: provider)
         }
@@ -1104,7 +1113,9 @@ final class WorkspaceTests: XCTestCase {
 
         do {
             let workspace = newWorkspace()
+            XCTAssertTrue(delegate.warnings.isEmpty)
             try workspace.updateDependencies(repin: true)
+            XCTAssertEqual(delegate.warnings, ["Consider unpinning B, it is pinned at 1.0.0 but the dependency is not present."])
             let g = try workspace.loadPackageGraph()
             XCTAssert(g.lookup("A").version == "1.0.1")
             // This dependency should be removed on updating dependencies because it is not referenced anywhere.
@@ -1122,7 +1133,7 @@ final class WorkspaceTests: XCTestCase {
                 initGitRepo(repoPath, tag: v1.description)
 
                 let manifest = Manifest(
-                    path: path.appending(component: Manifest.filename),
+                    path: repoPath.appending(component: Manifest.filename),
                     url: repoPath.asString,
                     package: PackageDescription.Package(
                         name: pkg,
@@ -1138,7 +1149,7 @@ final class WorkspaceTests: XCTestCase {
                 let repo = GitRepository(path: aPath)
                 try repo.tag(name: "1.5.0")
                 let aManifest = Manifest(
-                    path: path.appending(component: Manifest.filename),
+                    path: aPath.appending(component: Manifest.filename),
                     url: aPath.asString,
                     package: PackageDescription.Package(name: "A", dependencies: []),
                     products: [],
@@ -1162,8 +1173,10 @@ final class WorkspaceTests: XCTestCase {
             ]
 
             for root in roots {
+                try makeDirectories(root)
+                try system(["touch", root.appending(component: "foo.swift").asString])
                 let rootManifest = Manifest(
-                    path: path.appending(component: Manifest.filename),
+                    path: root.appending(component: Manifest.filename),
                     url: root.asString,
                     package: PackageDescription.Package(
                         name: root.basename,
@@ -1181,10 +1194,16 @@ final class WorkspaceTests: XCTestCase {
                 return try Workspace(
                     dataPath: buildPath,
                     editablesPath: buildPath.appending(component: "Packages"),
-                    pinsFile: buildPath.appending(component: "Package.pins"),
+                    pinsFile: path.appending(component: "Package.pins"),
                     manifestLoader: MockManifestLoader(manifests: manifests),
                     delegate: TestWorkspaceDelegate()
                 )
+            }
+
+            // Set auto pinning off.
+            do {
+                let workspace = try createWorkspace()
+                try workspace.pinsStore.setAutoPin(on: false)
             }
 
             // Throw if we have not registered any packages but want to load things.
@@ -1199,6 +1218,16 @@ final class WorkspaceTests: XCTestCase {
                 _ = try workspace.loadPackageGraph()
                 XCTFail("unexpected success")
             } catch WorkspaceOperationError.noRegisteredPackages {}
+
+            // Throw if we try to unregister a path which doesn't exists in workspace.
+            let fakePath = path.appending(component: "fake")
+            do {
+                let workspace = try createWorkspace()
+                try workspace.unregisterPackage(at: fakePath)
+                XCTFail("unexpected success")
+            } catch WorkspaceOperationError.pathNotRegistered(let path) {
+                XCTAssertEqual(path, fakePath)
+            }
 
             do {
                 let workspace = try createWorkspace()
@@ -1230,7 +1259,50 @@ final class WorkspaceTests: XCTestCase {
                 XCTAssertEqual(graph.packages.map{ $0.name }.sorted(), ["A", "B", "C", "D", "root1", "root2", "root3"])
                 XCTAssertEqual(graph.rootPackages.map{ $0.name }.sorted(), ["root1", "root2", "root3"])
                 XCTAssertEqual(graph.lookup("A").version, v1)
+
+                // FIXME: We need to reset because we apply constraints for current checkouts (see the above note).
+                try workspace.reset()
+
+                // Remove one of the packages.
+                try workspace.unregisterPackage(at: roots[2])
+                let newGraph = try workspace.loadPackageGraph()
+                XCTAssertEqual(newGraph.packages.map{ $0.name }.sorted(), ["A", "B", "C", "root1", "root2"])
+                XCTAssertEqual(newGraph.rootPackages.map{ $0.name }.sorted(), ["root1", "root2"])
+                XCTAssertEqual(newGraph.lookup("A").version, "1.5.0")
             }
+        }
+    }
+
+    func testWarnings() throws {
+        mktmpdir { path in
+            let manifestGraph = try MockManifestGraph(at: path,
+                rootDeps: [
+                    MockDependency("A", version: v1),
+                ],
+                packages: [
+                    MockPackage("A", version: v1),
+                    MockPackage("A", version: nil),
+                ]
+            )
+
+            let delegate = TestWorkspaceDelegate()
+            let workspace = try Workspace.createWith(rootPackage: path, manifestLoader: manifestGraph.manifestLoader, delegate: delegate)
+            let _ = try workspace.loadPackageGraph()
+
+            // Put A in edit mode.
+            let aManifest = try workspace.loadDependencyManifests().lookup(manifest: "A")!
+            let dependency = workspace.dependencyMap[RepositorySpecifier(url: aManifest.url)]!
+            try workspace.edit(dependency: dependency, at: dependency.currentRevision!, packageName: aManifest.name)
+
+            // Try to pin.
+            try workspace.pinAll()
+            XCTAssertEqual(delegate.warnings, ["not pinning A because it is being edited."])
+
+            // Remove edited checkout.
+            try removeFileTree(workspace.editablesPath)
+            delegate.warnings.removeAll()
+            let _ = try workspace.loadPackageGraph()
+            XCTAssertTrue(delegate.warnings[0].hasSuffix("A was being edited but has been removed, falling back to original checkout."))
         }
     }
 
@@ -1253,158 +1325,8 @@ final class WorkspaceTests: XCTestCase {
         ("testUneditDependency", testUneditDependency),
         ("testCleanAndReset", testCleanAndReset),
         ("testMultipleRootPackages", testMultipleRootPackages),
+        ("testWarnings", testWarnings),
     ]
-}
-
-/// Represents a mock package.
-struct MockPackage {
-    /// The name of the package.
-    let name: String
-
-    /// The current available version of the package.
-    let version: Version?
-
-    /// The dependencies of the package.
-    let dependencies: [MockDependency]
-
-    init(_ name: String, version: Version?, dependencies: [MockDependency] = []) {
-        self.name = name
-        self.version = version
-        self.dependencies = dependencies
-    }
-}
-
-/// Represents a mock package dependency.
-struct MockDependency {
-    /// The name of the dependency.
-    let name: String
-
-    /// The allowed version range of this dependency.
-    let version: Range<Version>
-
-    init(_ name: String, version: Range<Version>) {
-        self.name = name
-        self.version = version
-    }
-
-    init(_ name: String, version: Version) {
-        self.name = name
-        self.version = version..<version.successor()
-    }
-}
-
-/// A mock manifest graph creator. It takes in a path where it creates empty repositories for mock packages.
-/// For each mock package, it creates a manifest and maps it to the url and that version in mock manifest loader.
-/// It provides basic functionality of getting the repo paths and manifests which can be later modified in tests.
-struct MockManifestGraph {
-    /// The map of repositories created by this class where the key is name of the package.
-    let repos: [String: RepositorySpecifier]
-
-    /// The generated mock manifest loader.
-    let manifestLoader: MockManifestLoader
-
-    /// The generated root manifest.
-    let rootManifest: Manifest
-
-    /// The map of external manifests created.
-    let manifests: [MockManifestLoader.Key: Manifest]
-
-    /// Present if file system used is in inmemory.
-    let repoProvider: InMemoryGitRepositoryProvider?
-
-    /// Convinience accessor for repository specifiers.
-    func repo(_ package: String) -> RepositorySpecifier {
-        return repos[package]!
-    }
-
-    /// Convinience accessor for external manifests.
-    func manifest(_ package: String, version: Version) -> Manifest {
-        return manifests[MockManifestLoader.Key(url: repo(package).url, version: version)]!
-    }
-
-    /// Create instance with mocking on in memory file system.
-    init(
-        at path: AbsolutePath,
-        rootDeps: [MockDependency],
-        packages: [MockPackage],
-        fs: InMemoryFileSystem
-    ) throws {
-        try self.init(at: path, rootDeps: rootDeps, packages: packages, inMemory: (fs, InMemoryGitRepositoryProvider()))
-    }
-
-    init(
-        at path: AbsolutePath,
-        rootDeps: [MockDependency],
-        packages: [MockPackage],
-        inMemory: (fs: InMemoryFileSystem, provider: InMemoryGitRepositoryProvider)? = nil
-    ) throws {
-        repoProvider = inMemory?.provider
-        // Create the test repositories, we don't need them to have actual
-        // contents (the manifests are mocked).
-        let repos = Dictionary(items: try packages.map { package -> (String, RepositorySpecifier) in
-            let repoPath = path.appending(component: package.name)
-            let tag = package.version?.description ?? "initial"
-            let specifier = RepositorySpecifier(url: repoPath.asString)
-
-            // If this is in memory mocked graph.
-            if let inMemory = inMemory {
-                if !inMemory.fs.exists(repoPath) {
-                    let repo = InMemoryGitRepository(path: repoPath, fs: inMemory.fs)
-                    try repo.createDirectory(repoPath, recursive: true)
-                    let filePath = repoPath.appending(component: "source.swift")
-                    try repo.writeFileContents(filePath, bytes: "foo")
-                    repo.commit()
-                    try repo.tag(name: tag)
-                    inMemory.provider.add(specifier: specifier, repository: repo)
-                }
-            } else {
-                // Don't recreate repo if it is already there.
-                if !exists(repoPath) {
-                    try makeDirectories(repoPath)
-                    initGitRepo(repoPath, tag: package.version?.description ?? "initial")
-                }
-            }
-            return (package.name, specifier)
-        })
-
-        // Create the root manifest.
-        rootManifest = Manifest(
-            path: path.appending(component: Manifest.filename),
-            url: path.asString,
-            package: PackageDescription.Package(
-                name: "Root",
-                dependencies: MockManifestGraph.createDependencies(repos: repos, dependencies: rootDeps)),
-            products: [],
-            version: nil
-        )
-
-        // Create the manifests from mock packages.
-        var manifests = Dictionary(items: packages.map { package -> (MockManifestLoader.Key, Manifest) in
-            let url = repos[package.name]!.url
-            let manifest = Manifest(
-                path: path.appending(component: Manifest.filename),
-                url: url,
-                package: PackageDescription.Package(
-                    name: package.name,
-                    dependencies: MockManifestGraph.createDependencies(repos: repos, dependencies: package.dependencies)),
-                products: [],
-                version: package.version)
-            return (MockManifestLoader.Key(url: url, version: package.version), manifest)
-        })
-        // Add the root manifest.
-        manifests[MockManifestLoader.Key(url: path.asString, version: nil)] = rootManifest
-
-        manifestLoader = MockManifestLoader(manifests: manifests)
-        self.manifests = manifests
-        self.repos = repos
-    }
-
-    /// Maps MockDependencies into PackageDescription's Dependency array.
-    private static func createDependencies(repos: [String: RepositorySpecifier], dependencies: [MockDependency]) -> [PackageDescription.Package.Dependency] {
-        return dependencies.map { dependency in
-            return .Package(url: repos[dependency.name]?.url ?? "//\(dependency.name)", versions: dependency.version)
-        }
-    }
 }
 
 extension PackageGraph {

@@ -9,6 +9,7 @@
 */
 
 import Dispatch
+import class Foundation.OperationQueue
 
 import Basic
 import Utility
@@ -138,8 +139,10 @@ public class RepositoryManager {
     /// Queue to protect concurrent reads and mutations to repositories registery.
     private let serialQueue = DispatchQueue(label: "org.swift.swiftpm.repomanagerqueue-serial")
 
-    /// Queue to do concurrent operations on manager.
-    private let concurrentQueue = DispatchQueue(label: "org.swift.swiftpm.repomanagerqueue-concurrent", attributes: .concurrent)
+    /// Operation queue to do concurrent operations on manager.
+    ///
+    /// We use operation queue (and not dispatch queue) to limit the amount of concurrent operations.
+    private let operationQueue: OperationQueue
 
     /// The filesystem to operate on.
     private var fileSystem: FileSystem
@@ -159,6 +162,10 @@ public class RepositoryManager {
         self.delegate = delegate
         self.fileSystem = fileSystem
 
+        self.operationQueue = OperationQueue()
+        self.operationQueue.name = "org.swift.swiftpm.repomanagerqueue-concurrent"
+        self.operationQueue.maxConcurrentOperationCount = 10
+
         // Load the state from disk, if possible.
         do {
             _ = try restoreState()
@@ -174,15 +181,15 @@ public class RepositoryManager {
     ///
     /// This will initiate a clone of the repository automatically, if necessary.
     public func lookup(repository: RepositorySpecifier, completion: @escaping LookupCompletion) {
-        concurrentQueue.async { 
+        operationQueue.addOperation {
             // First look for the handle.
             let handle = self.getHandle(repository: repository)
             // Dispatch the action we want to take on the serial queue of the handle.
-            handle.serialQueue.async {
+            handle.serialQueue.sync {
                 let result: LookupResult
                 switch handle.status {
                 case .available:
-                    result = try! LookupResult {
+                    result = LookupResult(anyError: {
                         // Fetch and update the repository when it is being looked up.
                         if handle.needsFetch {
                             let repo = try handle.open()
@@ -191,7 +198,7 @@ public class RepositoryManager {
                             handle.needsFetch = false
                         }
                         return handle
-                    }
+                    })
                 case .pending:
                     precondition(false, "This should never have been called")
                     return
@@ -215,7 +222,7 @@ public class RepositoryManager {
                         result = Result(handle)
                     } catch {
                         handle.status = .error
-                        result = Result(AnyError(error))
+                        result = Result(error)
                     }
                     // Save the manager state.
                     self.serialQueue.sync { 
@@ -284,14 +291,26 @@ public class RepositoryManager {
 
     /// Removes the repository.
     public func remove(repository: RepositorySpecifier) throws {
-        // If repository isn't present, we're done.
-        guard let handle = repositories[repository.url] else {
-            return
+        try serialQueue.sync {
+            // If repository isn't present, we're done.
+            guard let handle = repositories[repository.url] else {
+                return
+            }
+            repositories[repository.url] = nil
+            let repositoryPath = path.appending(handle.subpath)
+            fileSystem.removeFileTree(repositoryPath)
+            try self.saveState()
         }
-        repositories[repository.url] = nil
-        let repositoryPath = path.appending(handle.subpath)
-        fileSystem.removeFileTree(repositoryPath)
-        try saveState()
+    }
+
+    /// Reset the repository manager.
+    ///
+    /// Note: This also removes the cloned repositories from the disk.
+    public func reset() {
+        serialQueue.sync {
+            self.repositories = [:]
+            self.fileSystem.removeFileTree(path)
+        }
     }
 
     // MARK: Persistence

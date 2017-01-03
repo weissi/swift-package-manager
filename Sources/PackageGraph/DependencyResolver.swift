@@ -8,6 +8,7 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
+import Basic
 import struct Utility.Version
 
 public enum DependencyResolverError: Error {
@@ -162,10 +163,8 @@ public protocol PackageContainer {
 public protocol PackageContainerProvider {
     associatedtype Container: PackageContainer
 
-    /// Get the container for a particular identifier.
-    ///
-    /// - Throws: If the package container could not be resolved or loaded.
-    func getContainer(for identifier: Container.Identifier) throws -> Container
+    /// Get the container for a particular identifier asynchronously.
+    func getContainer(for identifier: Container.Identifier, completion: @escaping (Result<Container, AnyError>) -> Void)
 }
 
 /// An individual constraint onto a container.
@@ -540,16 +539,25 @@ func ==<C: PackageContainer>(lhs: VersionAssignmentSet<C>, rhs: VersionAssignmen
 /// and #3, and optimality requires additional information (e.g. a
 /// prioritization among packages).
 ///
-/// As described, this problem is NP-complete (*). However, this solver does
-/// *not* currently attempt to solve the full NP-complete problem, rather it
-/// proceeds by first always attempting to choose the latest version of each
-/// container under consideration. However, if this version is unavailable due
-/// to the current choice of assignments, it will be rejected and no longer
-/// considered.
+/// As described, this problem is NP-complete (*). This solver currently
+/// implements a basic depth-first greedy backtracking algorithm, and honoring
+/// the order of dependencies as specified in the manifest file. The solver uses
+/// persistent data structures to manage the accumulation of state along the
+/// traversal, so the backtracking is not explicit, rather it is an implicit
+/// side effect of the underlying copy-on-write data structures.
 ///
-/// This algorithm is sound (a valid solution satisfies the assignment
-/// guarantees above), but *incomplete*; it may fail to find a valid solution to
-/// a satisfiable input.
+/// The resolver will always merge the complete set of immediate constraints for
+/// a package (i.e., the version ranges of its immediate dependencies) into the
+/// constraint set *before* traversing into any dependency. This property allows
+/// packages to manually work around performance issues in the resolution
+/// algorithm by _lifting_ problematic dependency constraints up to be immediate
+/// dependencies.
+///
+/// There is currently no external control offered by the solver over _which_
+/// solution satisfying the properties above is selected, if more than one are
+/// possible. In practice, the algorithm is designed such that it will
+/// effectively prefer (i.e., optimize for the newest version of) dependencies
+/// which are earliest in the depth-first, pre-order, traversal.
 ///
 /// (*) Via reduction from 3-SAT: Introduce a package for each variable, with
 /// two versions representing true and false. For each clause `C_n`, introduce a
@@ -587,13 +595,17 @@ public class DependencyResolver<
     /// The resolver's delegate.
     public let delegate: Delegate
 
+    /// Should resolver prefetch the containers.
+    private let enablePrefetching: Bool
+
     /// Contains any error encountered during dependency resolution.
     // FIXME: @testable private
     var error: Swift.Error?
 
-    public init(_ provider: Provider, _ delegate: Delegate) {
+    public init(_ provider: Provider, _ delegate: Delegate, enablePrefetching: Bool = false) {
         self.provider = provider
         self.delegate = delegate
+        self.enablePrefetching = enablePrefetching
     }
 
     /// Execute the resolution algorithm to find a valid assignment of versions.
@@ -675,6 +687,8 @@ public class DependencyResolver<
         //
         // FIXME: We must detect recursion here.
         return AnySequence(validVersions(container).lazy.flatMap{ version -> AnySequence<AssignmentSet> in
+                // If we had encountered any error, return early.
+                guard self.error == nil else { return AnySequence([]) }
                 // Create an assignment for this container and version.
                 var assignment = AssignmentSet()
                 assignment[container] = .version(version)
@@ -711,6 +725,13 @@ public class DependencyResolver<
     ) -> AnySequence<AssignmentSet> {
         var allConstraints = allConstraints
 
+        if enablePrefetching {
+            // Ask all of these containers upfront to do async cloning.
+            for constraint in constraints {
+                provider.getContainer(for: constraint.identifier) { _ in }
+            }
+        }
+
         // Update the active constraint set to include all active constraints.
         //
         // We want to put all of these constraints in up front so that we are
@@ -734,6 +755,9 @@ public class DependencyResolver<
         // merged. Thus, the reduce itself can be eager since the result is
         // lazy.
         return AnySequence(constraints.map{ $0.identifier }.reduce(AnySequence([(assignment, allConstraints)])) { (possibleAssignments, identifier) -> AnySequence<(AssignmentSet, ConstraintSet)> in
+                    // If we had encountered any error, return early.
+                    guard self.error == nil else { return AnySequence([]) }
+
                     // Get the container.
                     //
                     // Failures here will immediately abort the solution, although in
@@ -741,8 +765,6 @@ public class DependencyResolver<
                     // requiring this container. It isn't clear that is something we
                     // would ever want to handle at this level.
                     //
-                    // FIXME: We want to ask for all of these containers up-front to
-                    // allow for async cloning.
                     // FIXME: Making these methods throwing will kill the lazy behavior,
                     guard let container = safely({ try getContainer(for: identifier) }) else {
                         return AnySequence([])
@@ -814,8 +836,8 @@ public class DependencyResolver<
     // to have some measure of asynchronicity here.
     private func addContainer(for identifier: Identifier) throws -> Container {
         assert(!containers.keys.contains(identifier))
-
-        let container = try provider.getContainer(for: identifier)
+        // Get the container synchronously from provider.
+        let container = try await { provider.getContainer(for: identifier, completion: $0) }
         containers[identifier] = container
 
         // Validate the versions in the container.

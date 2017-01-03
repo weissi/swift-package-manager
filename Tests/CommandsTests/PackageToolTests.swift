@@ -165,16 +165,17 @@ final class PackageToolTests: XCTestCase {
             func build() throws -> String {
                 return try SwiftPMProduct.SwiftBuild.execute(["--enable-new-resolver"], chdir: fooPath, printIfError: true)
             }
+
+            // Put bar and baz in edit mode.
+            _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "edit", "bar", "--branch", "bugfix"], chdir: fooPath, printIfError: true)
+            _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "edit", "baz", "--branch", "bugfix"], chdir: fooPath, printIfError: true)
+
             // Build the package.
             _ = try build()
 
             let exec = [fooPath.appending(components: ".build", "debug", "foo").asString]
             // Sanity check.
             XCTAssertEqual(try popen(exec, environment: [:]), "5\n")
-
-            // Put bar and baz in edit mode.
-            _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "edit", "bar", "--branch", "bugfix"], chdir: fooPath, printIfError: true)
-            _ = try SwiftPMProduct.SwiftPackage.execute(["--enable-new-resolver", "edit", "baz", "--branch", "bugfix"], chdir: fooPath, printIfError: true)
 
             // We should see it now in packages directory.
             let editsPath = fooPath.appending(components: "Packages", "bar")
@@ -260,6 +261,7 @@ final class PackageToolTests: XCTestCase {
 
             _ = try SwiftPMProduct.SwiftBuild.execute(["--clean"], chdir: packageRoot, printIfError: true)
             XCTAssert(!exists(packageRoot.appending(components: ".build", "debug", "Bar")))
+            XCTAssertFalse(try localFileSystem.getDirectoryContents(packageRoot.appending(components: ".build", "repositories")).isEmpty)
             // We don't delete the build folder in new resolver.
             // FIXME: Eliminate this once we switch to new resolver.
             if !SwiftPMProduct.enableNewResolver {
@@ -267,9 +269,11 @@ final class PackageToolTests: XCTestCase {
                 XCTAssert(isDirectory(packageRoot.appending(component: "Packages")))
             }
 
-            // Fully clean, and check for removal of both.
+            // Fully clean.
             _ = try execute(["reset"], chdir: packageRoot)
-            XCTAssert(!isDirectory(packageRoot.appending(component: ".build")))
+            XCTAssertTrue(try localFileSystem.getDirectoryContents(packageRoot.appending(components: ".build", "repositories")).isEmpty)
+            // We preserve cache directories.
+            XCTAssert(isDirectory(packageRoot.appending(component: ".build")))
             // FIXME: Eliminate this.
             if !SwiftPMProduct.enableNewResolver {
                 XCTAssert(!isDirectory(packageRoot.appending(component: "Packages")))

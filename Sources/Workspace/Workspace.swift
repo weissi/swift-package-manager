@@ -37,6 +37,9 @@ public enum WorkspaceOperationError: Swift.Error {
 
     /// There are no registered root package paths.
     case noRegisteredPackages
+
+    /// The given path is not a registered root package.
+    case pathNotRegistered(path: AbsolutePath)
 }
 
 /// The delegate interface used by the workspace to report status information.
@@ -56,6 +59,9 @@ public protocol WorkspaceDelegate: class {
 
     /// The workspace is removing this repository because it is no longer needed.
     func removing(repository: String)
+
+    /// The workspace operation emitted this warning.
+    func warning(message: String)
 }
 
 private class WorkspaceResolverDelegate: DependencyResolverDelegate {
@@ -296,14 +302,13 @@ public class Workspace {
             repositoryManager: repositoryManager, manifestLoader: manifestLoader)
         self.fileSystem = fileSystem
 
-        // Ensure the cache path exists.
-        try self.fileSystem.createDirectory(repositoriesPath, recursive: true)
-        try self.fileSystem.createDirectory(checkoutsPath, recursive: true)
-
         // Initialize the default state.
         self.dependencyMap = [:]
 
         self.pinsStore = try PinsStore(pinsFile: pinsFile, fileSystem: self.fileSystem)
+
+        // Ensure the cache path exists.
+        try createCacheDirectories()
 
         // Load the state from disk, if possible.
         if try !restoreState() {
@@ -312,12 +317,28 @@ public class Workspace {
         }
     }
 
+    /// Create the cache directories.
+    private func createCacheDirectories() throws {
+        try fileSystem.createDirectory(repositoryManager.path, recursive: true)
+        try fileSystem.createDirectory(checkoutsPath, recursive: true)
+    }
+
     /// Registers the provided path as a root package. It is valid to re-add previously registered path.
     ///
     /// Note: This method just registers the path and does not validate it. A newly registered
     /// package will only be loaded on explicitly calling a related API.
     public func registerPackage(at path: AbsolutePath) {
         rootPackages.insert(path)
+    }
+
+    /// Unregister the provided path. This method will throw if the provided path is not a registered package.
+    ///
+    /// Note: Clients should call a related API to update managed dependencies.
+    public func unregisterPackage(at path: AbsolutePath) throws {
+        guard rootPackages.contains(path) else {
+            throw WorkspaceOperationError.pathNotRegistered(path: path)
+        }
+        rootPackages.remove(path)
     }
 
     /// Cleans the build artefacts from workspace data.
@@ -344,7 +365,10 @@ public class Workspace {
 
     /// Resets the entire workspace by removing the data directory.
     public func reset() throws {
+        dependencyMap = [:]
+        repositoryManager.reset()
         fileSystem.removeFileTree(dataPath)
+        try createCacheDirectories()
     }
 
     /// Puts a dependency in edit mode creating a checkout in editables directory.
@@ -476,13 +500,13 @@ public class Workspace {
             let package = dependencyManifest.manifest.name
             // If the dependency is in editable state, do not pin it.
             guard !dependency.isInEditableState else {
-                print("warning: not pinning \(package) because it is being edited.")
+                delegate.warning(message: "not pinning \(package) because it is being edited.")
                 continue
             }
             // We should have a version loaded to pin. This will never happen right now
             // because we can't have dependencies checked out to a git ref.
             guard let version = dependency.currentVersion else {
-                print("warning: not pinning \(package) because doesn't have a version loaded.")
+                delegate.warning(message: "not pinning \(package) because doesn't have a version loaded.")
                 continue
             }
             // Commit the pin.
@@ -566,7 +590,7 @@ public class Workspace {
         // way to get it back out of the resolver which is very
         // annoying. Maybe we should make an SPI on the provider for
         // this?
-        let container = try containerProvider.getContainer(for: specifier)
+        let container = try await { containerProvider.getContainer(for: specifier, completion: $0) }
         guard let tag = container.getTag(for: version) else {
             fatalError("Resolved version: \(version) not found for \(specifier).")
         }
@@ -617,7 +641,7 @@ public class Workspace {
             guard let newVersion = updateResultsMap[pin.repository] else {
                 // This is a stray pin as it is not present in updated results.
                 // FIXME: Use diagnosics engine when we have that.
-                print("note: Consider unpinning \(pin.package), it is pinned at \(pin.version) but the dependency is not present.")
+                delegate.warning(message: "Consider unpinning \(pin.package), it is pinned at \(pin.version) but the dependency is not present.")
                 continue
             }
             // We don't need to repin if its version did not change.
@@ -681,8 +705,8 @@ public class Workspace {
         return rootManifests.flatMap{ rootManifest in
             rootManifest.package.dependencies.map{
                 RepositoryPackageConstraint(container: RepositorySpecifier(url: $0.url), versionRequirement: .range($0.versionRange))
-            } + (includePins ? pinsStore.createConstraints() : [])
-        }
+            }
+        } + (includePins ? pinsStore.createConstraints() : [])
     }
 
     /// Runs the dependency resolver based on constraints provided and returns the results.
@@ -742,7 +766,7 @@ public class Workspace {
             if !fileSystem.exists(dependencyPath) {
                 try unedit(dependency: dependency, forceRemove: true)
                 // FIXME: Use diagnosics engine when we have that.
-                print("warning: \(dependencyPath.asString) was being edited but has been removed, falling back to original checkout.")
+                delegate.warning(message: "\(dependencyPath.asString) was being edited but has been removed, falling back to original checkout.")
             }
         }
     }
@@ -760,6 +784,7 @@ public class Workspace {
     ///
     /// - Returns: The loaded package graph.
     /// - Throws: Rethrows errors from dependency resolution (if required) and package graph loading.
+    @discardableResult
     public func loadPackageGraph() throws -> PackageGraph {
         // First, load the active manifest sets.
         let currentManifests = try loadDependencyManifests()

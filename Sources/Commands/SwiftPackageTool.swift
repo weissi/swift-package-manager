@@ -10,17 +10,10 @@
 
 import Basic
 import Build
-import Get
-import PackageLoading
 import PackageModel
 import SourceControl
 import Utility
 import Xcodeproj
-
-import enum Build.Configuration
-import protocol Build.Toolchain
-import func POSIX.exit
-import func POSIX.chdir
 
 /// Errors encountered duing the package tool operations.
 enum PackageToolOperationError: Swift.Error {
@@ -123,6 +116,7 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
             }
             // Get the current workspace.
             let workspace = try getActiveWorkspace()
+            try workspace.loadPackageGraph()
             let manifests = try workspace.loadDependencyManifests()
             // Look for the package's manifest.
             guard let (manifest, dependency) = manifests.lookup(package: packageName) else {
@@ -276,7 +270,7 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
 
         _ = parser.add(subparser: PackageMode.dumpPackage.rawValue, overview: "Print parsed Package.swift as JSON")
 
-        let editParser = parser.add(subparser: PackageMode.edit.rawValue, overview: "")
+        let editParser = parser.add(subparser: PackageMode.edit.rawValue, overview: "Put a package in editable mode (either --revision or --branch option is required)")
         binder.bind(
             positional: editParser.add(
                 positional: "name", kind: String.self,
@@ -318,7 +312,7 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
                 usage: "empty|library|executable|system-module"),
             to: { $0.initMode = $1 })
 
-        let uneditParser = parser.add(subparser: PackageMode.unedit.rawValue, overview: "")
+        let uneditParser = parser.add(subparser: PackageMode.unedit.rawValue, overview: "Remove a package from editable mode")
         binder.bind(
             positional: uneditParser.add(
                 positional: "name", kind: String.self,

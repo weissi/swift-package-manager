@@ -19,7 +19,7 @@ import Utility
 import TestSupport
 
 final class DescribeTests: XCTestCase {
-    let dummyPackage = Package(manifest: Manifest(path: AbsolutePath("/"), url: "/", package: PackageDescription.Package(name: "Foo"), products: [], version: nil), path: AbsolutePath("/"), modules: [], testModules: [], products: [])
+    let dummyPackage = Package(manifest: Manifest(path: AbsolutePath("/"), url: "/", package: PackageDescription.Package(name: "Foo"), products: [], version: nil), path: AbsolutePath("/"), modules: [], testModules: [], products: [], dependencies: [])
     
     struct InvalidToolchain: Toolchain {
         var swiftCompiler: AbsolutePath { fatalError() }
@@ -65,9 +65,8 @@ final class DescribeTests: XCTestCase {
     }
 
     func testClangModuleCanHaveSwiftDep() throws {
-        let clangModule = try ClangModule(name: "ClangModule", sources: Sources(paths: [], root: .root))
         let swiftModule = try SwiftModule(name: "SwiftModule", sources: Sources(paths: [], root: .root))
-        clangModule.dependencies = [swiftModule]
+        let clangModule = try ClangModule(name: "ClangModule", sources: Sources(paths: [], root: .root), dependencies: [swiftModule])
         let buildMeta = ClangModuleBuildMetadata(module: clangModule, prefix: .root, otherArgs: [])
         XCTAssertEqual(buildMeta.inputs, ["/SwiftModule.swiftmodule"])
     }

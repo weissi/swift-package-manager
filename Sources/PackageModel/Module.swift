@@ -33,10 +33,10 @@ public class Module {
     public let name: String
 
     /// The dependencies of this module, once loaded.
-    public var dependencies: [Module]
+    public let dependencies: [Module]
 
     /// The language-level module name.
-    public var c99name: String
+    public let c99name: String
 
     /// Whether this is a test module.
     //
@@ -52,11 +52,11 @@ public class Module {
     /// The sources for the module.
     public let sources: Sources
 
-    public init(name: String, type: ModuleType, sources: Sources, isTest: Bool = false) throws {
+    public init(name: String, type: ModuleType, sources: Sources, isTest: Bool = false, dependencies: [Module]) throws {
         self.name = name
         self.type = type
         self.sources = sources
-        self.dependencies = []
+        self.dependencies = dependencies
         self.c99name = self.name.mangledToC99ExtendedIdentifier()
         self.isTest = isTest
     }
@@ -68,14 +68,6 @@ public class Module {
         return (try! topologicalSort(dependencies, successors: { $0.dependencies })).reversed()
     }
 
-    /// The base prefix for the test module, used to associate with the target it tests.
-    public var basename: String {
-        guard isTest else {
-            fatalError("\(type(of: self)) should be a test module to access basename.")
-        }
-        precondition(name.hasSuffix(Module.testModuleNameSuffix))
-        return name[name.startIndex..<name.index(name.endIndex, offsetBy: -Module.testModuleNameSuffix.characters.count)]
-    }
 }
 
 extension Module: Hashable, Equatable {
@@ -87,7 +79,7 @@ public func ==(lhs: Module, rhs: Module) -> Bool {
 }
 
 public class SwiftModule: Module {
-    public init(name: String, isTest: Bool = false, sources: Sources) throws {
+    public init(name: String, isTest: Bool = false, sources: Sources, dependencies: [Module] = []) throws {
         // Compute the module type.
         let isLibrary = !sources.relativePaths.contains { path in
             let file = path.basename.lowercased()
@@ -96,7 +88,7 @@ public class SwiftModule: Module {
         }
         let type: ModuleType = isLibrary ? .library : .executable
         
-        try super.init(name: name, type: type, sources: sources, isTest: isTest)
+        try super.init(name: name, type: type, sources: sources, isTest: isTest, dependencies: dependencies)
     }
 }
 
@@ -104,11 +96,11 @@ public class CModule: Module {
     public let path: AbsolutePath
     public let pkgConfig: RelativePath?
     public let providers: [SystemPackageProvider]?
-    public init(name: String, type: ModuleType = .systemModule, sources: Sources, path: AbsolutePath, isTest: Bool = false, pkgConfig: RelativePath? = nil, providers: [SystemPackageProvider]? = nil) throws {
+    public init(name: String, type: ModuleType = .systemModule, sources: Sources, path: AbsolutePath, isTest: Bool = false, pkgConfig: RelativePath? = nil, providers: [SystemPackageProvider]? = nil, dependencies: [Module] = []) throws {
         self.path = path
         self.pkgConfig = pkgConfig
         self.providers = providers
-        try super.init(name: name, type: type, sources: sources, isTest: false)
+        try super.init(name: name, type: type, sources: sources, isTest: false, dependencies: dependencies)
     }
 }
 
@@ -118,7 +110,7 @@ public class ClangModule: Module {
         return sources.root.appending(component: "include")
     }
 
-    public init(name: String, isTest: Bool = false, sources: Sources) throws {
+    public init(name: String, isTest: Bool = false, sources: Sources, dependencies: [Module] = []) throws {
         // Compute the module type.
         let isLibrary = !sources.relativePaths.contains { path in
             let file = path.basename.lowercased()
@@ -127,7 +119,7 @@ public class ClangModule: Module {
         }
         let type: ModuleType = isLibrary ? .library : .executable
         
-        try super.init(name: name, type: type, sources: sources, isTest: isTest)
+        try super.init(name: name, type: type, sources: sources, isTest: isTest, dependencies: dependencies)
     }
 }
 

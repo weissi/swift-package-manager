@@ -17,21 +17,16 @@ import Utility
 import func POSIX.exit
 
 enum PackageGraphError: Swift.Error {
-    /// Indicates two modules with the same name.
-    case duplicateModule(String)
-
     /// Indicates a non-root package with no modules.
     case noModules(Package)
 
     /// The package dependency declaration has cycle in it.
-    case cycleDetected((path: [Package], cycle: [Package]))
+    case cycleDetected((path: [Manifest], cycle: [Manifest]))
 }
 
 extension PackageGraphError: FixableError {
     var error: String {
         switch self {
-        case .duplicateModule(let name):
-            return "multiple modules with the name \(name) found"
         case .noModules(let package):
             return "the package \(package) contains no modules"
         case .cycleDetected(let cycle):
@@ -43,8 +38,6 @@ extension PackageGraphError: FixableError {
 
     var fix: String? {
         switch self {
-        case .duplicateModule(_):
-            return "modules should have a unique name across dependencies"
         case .noModules(_):
             return "create at least one module"
         case .cycleDetected(_):
@@ -61,12 +54,23 @@ public struct PackageGraphLoader {
     /// Load the package graph for the given package path.
     public func load(rootManifests: [Manifest], externalManifests: [Manifest], fileSystem: FileSystem = localFileSystem) throws -> PackageGraph {
         let rootManifestSet = Set(rootManifests)
-        let allManifests = externalManifests + rootManifests
+        // Manifest url to manifest map.
+        let manifestURLMap: [String: Manifest] = Dictionary(items: (externalManifests + rootManifests).map { ($0.url, $0) })
+        // Detect cycles in manifest dependencies.
+        if let cycle = findCycle(rootManifests, successors: { $0.package.dependencies.map{ manifestURLMap[$0.url]! } }) {
+            throw PackageGraphError.cycleDetected(cycle)
+        }
+        // Sort all manifests toplogically.
+        //
+        // This is important because we want to create packages bottom up, so we always have any dependent package.
+        let allManifests = try! topologicalSort(rootManifests) { $0.package.dependencies.map{ manifestURLMap[$0.url]! } }
 
         // Create the packages and convert to modules.
         var packages: [Package] = []
         var map: [Package: [Module]] = [:]
-        for manifest in allManifests {
+        // Mapping of package url (in manifest) to created package.
+        var packageURLMap: [String: Package] = [:]
+        for manifest in allManifests.lazy.reversed() {
             let isRootPackage = rootManifestSet.contains(manifest)
 
             // Derive the path to the package.
@@ -74,88 +78,34 @@ public struct PackageGraphLoader {
             // FIXME: Lift this out of the manifest.
             let packagePath = manifest.path.parentDirectory
 
+            // Load all of the package dependencies.
+            // We will always have all of the dependent packages because we create packages bottom up.
+            let dependencies = manifest.package.dependencies.map{ packageURLMap[$0.url]! }
+
             // Create a package from the manifest and sources.
             //
             // FIXME: We should always load the tests, but just change which
             // tests we build based on higher-level logic. This would make it
             // easier to allow testing of external package tests.
-            let builder = PackageBuilder(manifest: manifest, path: packagePath, fileSystem: fileSystem)
+            let builder = PackageBuilder(manifest: manifest, path: packagePath, fileSystem: fileSystem, dependencies: dependencies)
             let package = try builder.construct(includingTestModules: isRootPackage)
             packages.append(package)
             
             map[package] = package.modules + package.testModules
+            packageURLMap[package.manifest.url] = package
 
-            // Diagnose empty non-root packages, which are something we allow as a special case.
-            if package.modules.isEmpty {
-                if isRootPackage {
-                    // Ignore and print warning if root package doesn't contain any sources.
-                    print("warning: root package '\(package)' does not contain any sources")
-                    
-                    // Exit now if there are no more packages.
-                    //
-                    // FIXME: This does not belong here.
-                    if allManifests.count == 1 { exit(0) }
-                } else {
-                    throw PackageGraphError.noModules(package)
-                }
+            // Throw if any of the non-root package is empty.
+            if package.modules.isEmpty && !isRootPackage {
+                throw PackageGraphError.noModules(package)
             }
         }
 
-        // Load all of the package dependencies.
-        //
-        // FIXME: Do this concurrently with creating the packages so we can create immutable ones.
-        for package in packages {
-            // FIXME: This is inefficient.
-            package.dependencies = package.manifest.package.dependencies.map{ dep in packages.pick{ dep.url == $0.url }! }
-        }
-
-        // Detect cycles in package dependencies.
-        // Input is reversed because the root manifest is the last one.
-        if let cycle = findCycle(packages.reversed(), successors: { $0.dependencies}) {
-            throw PackageGraphError.cycleDetected(cycle)
-        }
-
-        // Connect up cross-package module dependencies.
-        fillModuleGraph(packages)
-    
         let (rootPackages, externalPackages) = packages.split { rootManifests.contains($0.manifest) }
 
         let modules = try recursiveDependencies(packages.flatMap{ map[$0] ?? [] })
         let externalModules = try recursiveDependencies(externalPackages.flatMap{ map[$0] ?? [] })
 
         return PackageGraph(rootPackages: rootPackages, modules: modules, externalModules: Set(externalModules))
-    }
-}
-
-/// Add inter-package dependencies.
-///
-/// This function will add cross-package dependencies between a module and all
-/// of the modules produced by any package in the transitive closure of its
-/// containing package's dependencies.
-private func fillModuleGraph(_ packages: [Package]) {
-    for package in packages {
-        let packageModules = package.modules + package.testModules
-        let dependencies = try! topologicalSort(package.dependencies, successors: { $0.dependencies })
-        for dep in dependencies {
-            let depModules = dep.modules.filter {
-                guard !$0.isTest else { return false }
-
-                switch $0 {
-                case let module as SwiftModule where module.type == .library:
-                    return true
-                case let module as ClangModule where module.type == .library:
-                    return true
-                case is CModule:
-                    return true
-                default:
-                    return false
-                }
-            }
-            for module in packageModules {
-                // FIXME: This is inefficient.
-                module.dependencies.insert(contentsOf: depModules, at: 0)
-            }
-        }
     }
 }
 
@@ -177,8 +127,7 @@ private func recursiveDependencies(_ modules: [Module]) throws -> [Module] {
                   top.sources.root != set[index].sources.root else {
                 continue;
             }
-
-            throw PackageGraphError.duplicateModule(top.name)
+            fatalError("This should have been caught by package builder.")
         }
     }
 

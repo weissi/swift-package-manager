@@ -64,8 +64,9 @@ public func handle(error: Any) -> Never {
     case ArgumentParserError.unexpectedArgument(let arg):
         print(error: "Unexpected argument \(arg). Use --help to list available arguments")
 
-    case ArgumentParserError.expectedArguments(let args):
-        print(error: "Expected arguments: \(args.joined(separator: ", ")). Use --help for display information")
+    case ArgumentParserError.expectedArguments(let parser, let args):
+        print(error: "Expected arguments: \(args.joined(separator: ", ")).\n")
+        parser.printUsage(on: stderrStream)
 
     case PinOperationError.notPinned:
         print(error: "The provided package is not pinned")
@@ -84,12 +85,24 @@ public func handle(error: Any) -> Never {
         if let fix = error.fix {
             print(fix: fix)
         }
-    case ManifestParseError.invalidManifestFormat(let errors):
-        var errorString = "invalid manifest format"
-        if let errors = errors {
-            errorString += "; " + errors.joined(separator: ", ")
+
+    case Package.Error.noManifest(let url, let version):
+        var string = "\(url) has no manifest"
+        if let version = version {
+            string += " for version \(version)"
         }
+        print(error: string)
+
+    case ManifestParseError.emptyManifestFile:
+        print(error: "Empty manifest file is not supported anymore. Use `swift package init` to autogenerate.")
+
+    case ManifestParseError.invalidManifestFormat(let errors):
+        print(error: errors)
+
+    case ManifestParseError.runtimeManifestErrors(let errors):
+        let errorString = "invalid manifest format; " + errors.joined(separator: ", ")
         print(error: errorString)
+
     case PackageToolOperationError.insufficientOptions(let usage):
         print(usage, to: &stderr)
     default:
