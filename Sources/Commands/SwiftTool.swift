@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -9,6 +9,7 @@
  */
 
 import Basic
+import Build
 import Get
 import PackageLoading
 import PackageGraph
@@ -226,6 +227,12 @@ public class SwiftTool<Options: ToolOptions> {
         
             return try PackageGraphLoader().load(rootManifests: [rootManifest], externalManifests: externalManifests)
         }
+    }
+
+    /// Build the package graph using swift-build-tool.
+    func build(graph: PackageGraph, includingTests: Bool, config: Build.Configuration) throws {
+        let yaml = try describe(buildPath, config, graph, flags: options.buildFlags, toolchain: try UserToolchain())
+        try Commands.build(yamlPath: yaml, target: includingTests ? "test" : nil)
     }
 
     /// Cleans the build artefacts.

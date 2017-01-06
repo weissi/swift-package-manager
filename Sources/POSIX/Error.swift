@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -32,6 +32,7 @@ public enum SystemError: Swift.Error {
     case unlink(Int32, String)
     case unsetenv(Int32, String)
     case waitpid(Int32)
+    case usleep(Int32)
 }
 
 import func libc.strerror_r
@@ -108,6 +109,8 @@ extension SystemError: CustomStringConvertible {
             return "unsetenv error: \(strerror(errno)): \(key)"
         case .waitpid(let errno):
             return "waitpid error: \(strerror(errno))"
+        case .usleep(let errno):
+            return "usleep error: \(strerror(errno))"
         }
     }
 }

@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -132,7 +132,7 @@ extension Module.Error: FixableError {
     var fix: String? {
         switch self {
         case .invalidName(let path, _, let problem):
-            return "rename the directory ‘\(path)’\(problem.fix ?? "")"
+            return "rename the directory '\(path)'\(problem.fix ?? "")"
         case .mixedSources(_):
             return "use only a single language within a module"
         }
@@ -145,9 +145,9 @@ extension Module.Error.ModuleNameProblem : FixableError {
           case .emptyName:
             return "the module name is empty"
           case .noTestSuffix:
-            return "the name of a test module has no ‘Tests’ suffix"
+            return "the name of a test module has no 'Tests' suffix"
           case .hasTestSuffix:
-            return "the name of a non-test module has a ‘Tests’ suffix"
+            return "the name of a non-test module has a 'Tests' suffix"
         }
     }
     var fix: String? {
@@ -155,9 +155,9 @@ extension Module.Error.ModuleNameProblem : FixableError {
           case .emptyName:
             return " to have a non-empty name"
           case .noTestSuffix:
-            return " to have a ‘Tests’ suffix"
+            return " to have a 'Tests' suffix"
           case .hasTestSuffix:
-            return " to not have a ‘Tests’ suffix"
+            return " to not have a 'Tests' suffix"
         }
     }
 }
@@ -306,11 +306,6 @@ public struct PackageBuilder {
         return manifest.package.exclude.map { packagePath.appending(RelativePath($0)) }
     }
     
-    private var pkgConfigPath: RelativePath? {
-        guard let pkgConfig = manifest.package.pkgConfig else { return nil }
-        return RelativePath(pkgConfig)
-    }
-
     /// Returns path to all the items in a directory.
     /// FIXME: This is generic functionality, and should move to FileSystem.
     func directoryContents(_ path: AbsolutePath) throws -> [AbsolutePath] {
@@ -373,7 +368,7 @@ public struct PackageBuilder {
         if fileSystem.isFile(moduleMapPath) {
             // Package contains a modulemap at the top level, so we assuming it's a system module.
             let sources = Sources(paths: [moduleMapPath], root: packagePath)
-            return [try CModule(name: manifest.name, sources: sources, path: packagePath, pkgConfig: pkgConfigPath, providers: manifest.package.providers, dependencies: moduleDependencies())]
+            return [CModule(name: manifest.name, sources: sources, path: packagePath, pkgConfig: manifest.package.pkgConfig, providers: manifest.package.providers, dependencies: moduleDependencies())]
         }
 
         // At this point the module can't be a system module, make sure manifest doesn't contain
@@ -537,7 +532,7 @@ public struct PackageBuilder {
         if cSources.isEmpty {
             guard !swiftSources.isEmpty else { return nil }
             // No C sources, so we expect to have Swift sources, and we create a Swift module.
-            return try SwiftModule(
+            return SwiftModule(
                 name: potentialModule.name,
                 isTest: potentialModule.isTest,
                 sources: Sources(paths: swiftSources, root: potentialModule.path),
@@ -545,7 +540,7 @@ public struct PackageBuilder {
         } else {
             // No Swift sources, so we expect to have C sources, and we create a C module.
             guard swiftSources.isEmpty else { throw Module.Error.mixedSources(potentialModule.path.asString) }
-            return try ClangModule(
+            return ClangModule(
                 name: potentialModule.name,
                 isTest: potentialModule.isTest,
                 sources: Sources(paths: cSources, root: potentialModule.path),

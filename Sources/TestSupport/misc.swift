@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -9,6 +9,7 @@
 */
 
 import func XCTest.XCTFail
+import class Foundation.NSDate
 
 import Basic
 import PackageDescription
@@ -217,4 +218,18 @@ public func withCustomEnv(_ env: [String: String], body: () throws -> ()) throws
         throw error
     }
     try restore()
+}
+
+/// Waits for a file to appear for around 1 second.
+/// Returns true if found, false otherwise.
+public func waitForFile(_ path: AbsolutePath) -> Bool {
+    let endTime = NSDate().timeIntervalSince1970 + 2
+    while NSDate().timeIntervalSince1970 < endTime {
+        // Sleep for a bit so we don't burn a lot of CPU.
+        try? usleep(microSeconds: 10000)
+        if localFileSystem.exists(path) {
+            return true
+        }
+    }
+    return false
 }

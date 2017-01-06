@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -14,17 +14,17 @@ import Basic
 @testable import PackageModel
 
 private extension Module {
-    convenience init(name: String, dependencies: [Module] = []) throws {
-        try self.init(name: name, type: .library, sources: Sources(paths: [], root: AbsolutePath("/")), dependencies: dependencies)
+    convenience init(name: String, dependencies: [Module] = []) {
+        self.init(name: name, type: .library, sources: Sources(paths: [], root: AbsolutePath("/")), dependencies: dependencies)
     }
 }
 
 class ModuleTests: XCTestCase {
     /// Check that module dependencies appear in build order.
     func testDependencyOrder() throws {
-        let c = try Module(name: "c")
-        let b = try Module(name: "b", dependencies: [c])
-        let a = try Module(name: "a", dependencies: [b])
+        let c = Module(name: "c")
+        let b = Module(name: "b", dependencies: [c])
+        let a = Module(name: "a", dependencies: [b])
         XCTAssertEqual(a.recursiveDependencies, [c, b])
     }
 

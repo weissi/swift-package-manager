@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -12,6 +12,7 @@ import POSIX
 
 import Basic
 import protocol Build.Toolchain
+import Utility
 
 #if os(macOS)
     private let whichClangArgs = ["xcrun", "--find", "clang"]
@@ -31,26 +32,29 @@ struct UserToolchain: Toolchain {
     let defaultSDK: AbsolutePath?
 
 #if os(macOS)
+    /// Path to the sdk platform framework path.
+    let sdkPlatformFrameworksPath: AbsolutePath
+
     var clangPlatformArgs: [String] {
-        return ["-arch", "x86_64", "-mmacosx-version-min=10.10", "-isysroot", defaultSDK!.asString]
+        return ["-arch", "x86_64", "-mmacosx-version-min=10.10", "-isysroot", defaultSDK!.asString, "-F", sdkPlatformFrameworksPath.asString]
     }
     var swiftPlatformArgs: [String] {
-        return ["-target", "x86_64-apple-macosx10.10", "-sdk", defaultSDK!.asString]
+        return ["-target", "x86_64-apple-macosx10.10", "-sdk", defaultSDK!.asString, "-F", sdkPlatformFrameworksPath.asString]
     }
 #else
-    let clangPlatformArgs: [String] = []
+    let clangPlatformArgs: [String] = ["-fPIC"]
     let swiftPlatformArgs: [String] = []
 #endif
 
     /// Lookup an executable path from environment variable value. This method searches in the following order:
-    /// * If env value is a valid abolsute path, return it.
+    /// * If env value is a valid absolute path, return it.
     /// * If env value is relative path, first try to locate it in current working directory.
     /// * Otherwise, in provided search paths.
     ///
     /// - Parameters:
     ///   - value: The value from environment variable.
     ///   - cwd: The current working directory to look in.
-    ///   - searchPath: The addtional search path to look in if not found in cwd.
+    ///   - searchPath: The additional search path to look in if not found in cwd.
     /// - Returns: Valid path to executable if present, otherwise nil.
     static func lookupExecutablePath(inEnvValue value: String?, currentWorkingDirectory cwd: AbsolutePath, searchPaths: [AbsolutePath]) -> AbsolutePath? {
         // We should have a value to continue.
@@ -157,6 +161,8 @@ struct UserToolchain: Toolchain {
                 throw Error.invalidToolchain(problem: "could not find default SDK at expected path \(sdk.asString)")
             }
         }
+
+        self.sdkPlatformFrameworksPath = try platformFrameworksPath()
       #else
         defaultSDK = nil
       #endif

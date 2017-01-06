@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -41,10 +41,6 @@ extension Command {
             args += ["-L\(prefix.asString)"]
             args += ["-o", outpath.asString]
 
-          #if os(macOS)
-            args += ["-F", try platformFrameworksPath().asString]
-          #endif
-
         case .Library(.Static):
             let inputs = buildables.map{ $0.targetName } + objects.map{ $0.asString }
             let outputs = [outpath.asString]
@@ -60,7 +56,6 @@ extension Command {
             objects += product.modules.flatMap{ $0 as? ClangModule }.flatMap{ ClangModuleBuildMetadata(module: $0, prefix: prefix, otherArgs: []).objects }
           #if os(macOS)
             args += ["-Xlinker", "-bundle"]
-            args += ["-F", try platformFrameworksPath().asString]
 
             // TODO should be llbuild rules∫
             if conf == .debug {

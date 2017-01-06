@@ -1,18 +1,11 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
-
- -----------------------------------------------------------------------
-
- A Target is a collection of sources and configuration that can be built
- into a product.
- 
- TODO should be a protocol
 */
 
 import Basic
@@ -25,7 +18,7 @@ public enum ModuleType: String {
     case systemModule = "system-module"
 }
 
-public class Module {
+public class Module: ObjectIdentifierProtocol {
     /// The name of the module.
     ///
     /// NOTE: This name is not the language-level module (i.e., the importable
@@ -52,7 +45,7 @@ public class Module {
     /// The sources for the module.
     public let sources: Sources
 
-    public init(name: String, type: ModuleType, sources: Sources, isTest: Bool = false, dependencies: [Module]) throws {
+    public init(name: String, type: ModuleType, sources: Sources, isTest: Bool = false, dependencies: [Module]) {
         self.name = name
         self.type = type
         self.sources = sources
@@ -70,16 +63,8 @@ public class Module {
 
 }
 
-extension Module: Hashable, Equatable {
-    public var hashValue: Int { return c99name.hashValue }
-}
-
-public func ==(lhs: Module, rhs: Module) -> Bool {
-    return lhs.c99name == rhs.c99name
-}
-
 public class SwiftModule: Module {
-    public init(name: String, isTest: Bool = false, sources: Sources, dependencies: [Module] = []) throws {
+    public init(name: String, isTest: Bool = false, sources: Sources, dependencies: [Module] = []) {
         // Compute the module type.
         let isLibrary = !sources.relativePaths.contains { path in
             let file = path.basename.lowercased()
@@ -88,19 +73,19 @@ public class SwiftModule: Module {
         }
         let type: ModuleType = isLibrary ? .library : .executable
         
-        try super.init(name: name, type: type, sources: sources, isTest: isTest, dependencies: dependencies)
+        super.init(name: name, type: type, sources: sources, isTest: isTest, dependencies: dependencies)
     }
 }
 
 public class CModule: Module {
     public let path: AbsolutePath
-    public let pkgConfig: RelativePath?
+    public let pkgConfig: String?
     public let providers: [SystemPackageProvider]?
-    public init(name: String, type: ModuleType = .systemModule, sources: Sources, path: AbsolutePath, isTest: Bool = false, pkgConfig: RelativePath? = nil, providers: [SystemPackageProvider]? = nil, dependencies: [Module] = []) throws {
+    public init(name: String, type: ModuleType = .systemModule, sources: Sources, path: AbsolutePath, isTest: Bool = false, pkgConfig: String? = nil, providers: [SystemPackageProvider]? = nil, dependencies: [Module] = []) {
         self.path = path
         self.pkgConfig = pkgConfig
         self.providers = providers
-        try super.init(name: name, type: type, sources: sources, isTest: false, dependencies: dependencies)
+        super.init(name: name, type: type, sources: sources, isTest: false, dependencies: dependencies)
     }
 }
 
@@ -110,7 +95,7 @@ public class ClangModule: Module {
         return sources.root.appending(component: "include")
     }
 
-    public init(name: String, isTest: Bool = false, sources: Sources, dependencies: [Module] = []) throws {
+    public init(name: String, isTest: Bool = false, sources: Sources, dependencies: [Module] = []) {
         // Compute the module type.
         let isLibrary = !sources.relativePaths.contains { path in
             let file = path.basename.lowercased()
@@ -119,7 +104,7 @@ public class ClangModule: Module {
         }
         let type: ModuleType = isLibrary ? .library : .executable
         
-        try super.init(name: name, type: type, sources: sources, isTest: isTest, dependencies: dependencies)
+        super.init(name: name, type: type, sources: sources, isTest: isTest, dependencies: dependencies)
     }
 }
 

@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -544,7 +544,7 @@ class ConventionTests: XCTestCase {
         var fs = InMemoryFileSystem(emptyFiles:
             "/Sources/FooTests/source.swift")
         PackageBuilderTester("TestsInSources", in: fs) { result in
-            result.checkDiagnostic("the directory Sources/FooTests has an invalid name (\'FooTests\'): the name of a non-test module has a ‘Tests’ suffix fix: rename the directory ‘Sources/FooTests’ to not have a ‘Tests’ suffix")
+            result.checkDiagnostic("the directory Sources/FooTests has an invalid name (\'FooTests\'): the name of a non-test module has a 'Tests' suffix fix: rename the directory 'Sources/FooTests' to not have a 'Tests' suffix")
         }
 
         // Normal module in Tests/
@@ -552,7 +552,7 @@ class ConventionTests: XCTestCase {
             "/Sources/main.swift",
             "/Tests/Foo/source.swift")
         PackageBuilderTester("TestsInSources", in: fs) { result in
-            result.checkDiagnostic("the directory Tests/Foo has an invalid name (\'Foo\'): the name of a test module has no ‘Tests’ suffix fix: rename the directory ‘Tests/Foo’ to have a ‘Tests’ suffix")
+            result.checkDiagnostic("the directory Tests/Foo has an invalid name (\'Foo\'): the name of a test module has no 'Tests' suffix fix: rename the directory 'Tests/Foo' to have a 'Tests' suffix")
         }
     }
 

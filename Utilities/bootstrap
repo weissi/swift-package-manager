@@ -3,7 +3,7 @@
 """
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -970,6 +970,8 @@ def main():
     if "test" in build_actions:
         # Construct the test environment.
         cmd = env_cmd + [swift_test_path] + build_flags
+        note("testing with command: %s" % (
+            ' '.join(cmd),))
         result = subprocess.call(cmd, cwd=g_project_root)
         if result != 0:
             error("tests failed with exit status %d" % (result,))

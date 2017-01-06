@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -31,7 +31,7 @@ extension Command {
             linkFlags += buildMeta.linkDependenciesFlags + module.languageLinkArgs + (try module.pkgConfigArgs().libs)
         }
 
-        args += try ClangModuleBuildMetadata.basicArgs() + otherArgs
+        args += otherArgs
         args += ["-L\(prefix.asString)"]
         // Linux doesn't search executable directory for shared libs so embed runtime search path.
       #if os(Linux)
@@ -47,7 +47,6 @@ extension Command {
         case .Test:
             #if os(macOS)
                 args += ["-Xlinker", "-bundle"]
-                args += ["-F", try platformFrameworksPath().asString]
             #else
                 fatalError("Can't build \(product.name), \(product.type) is not yet supported.")
             #endif
