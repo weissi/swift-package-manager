@@ -12,11 +12,13 @@ import XCTest
 import TestSupport
 import Basic
 import PackageModel
+import Utility
+import libc
+import class Foundation.ProcessInfo
 
-import class Utility.Git
-import func libc.sleep
 import enum POSIX.Error
 import func POSIX.popen
+typealias ProcessID = Utility.Process.ProcessID
 
 class MiscellaneousTestCase: XCTestCase {
     func testPrintsSelectedDependencyVersion() {
@@ -411,15 +413,18 @@ class MiscellaneousTestCase: XCTestCase {
 
     func testPkgConfigClangModules() throws {
         fixture(name: "Miscellaneous/PkgConfig") { prefix in
-            _ = try executeSwiftBuild(prefix.appending(component: "SystemModule"))
-            XCTAssertFileExists(prefix.appending(components: "SystemModule", ".build", "debug", "libSystemModule.\(Product.dynamicLibraryExtension)"))
+            let systemModule = prefix.appending(component: "SystemModule")
+            // Create a shared library.
+            let input = systemModule.appending(components: "Sources", "SystemModule.c")
+            let output =  systemModule.appending(component: "libSystemModule.\(Product.dynamicLibraryExtension)")
+            try systemQuietly(["clang", "-shared", input.asString, "-o", output.asString])
 
             let pcFile = prefix.appending(component: "libSystemModule.pc")
 
             let stream = BufferedOutputByteStream()
-            stream <<< "prefix=\(prefix.appending(component: "SystemModule").asString)\n"
+            stream <<< "prefix=\(systemModule.asString)\n"
             stream <<< "exec_prefix=${prefix}\n"
-            stream <<< "libdir=${exec_prefix}/.build/debug\n"
+            stream <<< "libdir=${exec_prefix}\n"
             stream <<< "includedir=${prefix}/Sources/include\n"
             stream <<< "Name: SystemModule\n"
             stream <<< "URL: http://127.0.0.1/\n"
@@ -434,6 +439,55 @@ class MiscellaneousTestCase: XCTestCase {
             _ = try executeSwiftBuild(moduleUser, env: env)
 
             XCTAssertFileExists(moduleUser.appending(components: ".build", "debug", "SystemModuleUserClang"))
+        }
+    }
+
+    func testCanKillSubprocessOnSigInt() throws {
+        fixture(name: "DependencyResolution/External/Simple") { prefix in
+
+            let fakeGit = prefix.appending(components: "bin", "git")
+            let waitFile = prefix.appending(components: "waitfile")
+
+            try localFileSystem.createDirectory(fakeGit.parentDirectory)
+
+            // Write out fake git.
+            let stream = BufferedOutputByteStream()
+            stream <<< "#!/bin/sh" <<< "\n"
+            stream <<< "set -e" <<< "\n"
+            stream <<< "printf \"$$\" >> " <<< waitFile.asString <<< "\n"
+            stream <<< "while true; do sleep 1; done" <<< "\n"
+            try localFileSystem.writeFileContents(fakeGit, bytes: stream.bytes)
+
+            // Make it executable.
+            _ = try Process.popen(args: "chmod", "+x", fakeGit.asString)
+
+            // Put fake git in PATH.
+            var env = ProcessInfo.processInfo.environment
+            let oldPath = env["PATH"]
+            env["PATH"] = fakeGit.parentDirectory.asString
+            if let oldPath = oldPath {
+                env["PATH"] = env["PATH"]! + ":" + oldPath
+            }
+
+            // Launch swift-build.
+            let app = prefix.appending(component: "Bar")
+            let process = Process(args: SwiftPMProduct.SwiftBuild.path.asString, "--chdir", app.asString, environment: env)
+            try process.launch()
+
+            guard waitForFile(waitFile) else {
+                return XCTFail("Couldn't launch the process")
+            }
+            // Interrupt the process.
+            process.signal(SIGINT)
+            let result = try process.waitUntilExit()
+
+            // We should not have exited with zero.
+            XCTAssert(result.exitStatus != .terminated(code: 0))
+
+            // Process and subprocesses should be dead.
+            let contents = try localFileSystem.readFileContents(waitFile).asString!
+            XCTAssertFalse(try Process.running(process.processID))
+            XCTAssertFalse(try Process.running(ProcessID(contents)!))
         }
     }
 
@@ -470,5 +524,6 @@ class MiscellaneousTestCase: XCTestCase {
         ("testInitPackageNonc99Directory", testInitPackageNonc99Directory),
         ("testOverridingSwiftcArguments", testOverridingSwiftcArguments),
         ("testPkgConfigClangModules", testPkgConfigClangModules),
+        ("testCanKillSubprocessOnSigInt", testCanKillSubprocessOnSigInt),
     ]
 }
